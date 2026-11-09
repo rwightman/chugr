@@ -33,6 +33,8 @@ def create_loader_wds(
         sample_shuffle_size: int = _SAMPLE_SHUFFLE_SIZE,
         sample_shuffle_initial: int = _SAMPLE_SHUFFLE_INITIAL,
         distributed: DistributedCfg = DistributedCfg(),
+        naflex_scheduler=None,
+        naflex_stage_factory: Optional[Callable] = None,
 ):
     """ Create a webdataset loader
 
@@ -56,6 +58,9 @@ def create_loader_wds(
         sample_shuffle_size:
         sample_shuffle_initial:
         distributed:
+        naflex_scheduler: NaFlexBatchScheduler for schedule driven (variable seq_len & batch size) batching
+        naflex_stage_factory: interval counter -> pipeline stages (bucketing, NaFlexBatcher) replacing the
+            task pipeline and fixed size batching
 
     Returns:
 
@@ -80,7 +85,13 @@ def create_loader_wds(
 
     num_batches_per_worker = 0
     num_workers_nonzero = max(num_workers, 1)
-    if is_training:
+    if is_training and naflex_scheduler is not None:
+        # schedule driven batching, each worker yields its share of the rank identical schedule per interval
+        assert resampled, 'NaFlex schedule batching requires resampled (infinite) shards.'
+        num_batches = naflex_scheduler.num_batches_for_workers(num_workers_nonzero)
+        num_samples = naflex_scheduler.num_samples_for_workers(num_workers_nonzero)
+        batch_size = 0
+    elif is_training:
         assert batch_size >= 1, 'batching must be enabled for train, set batch_size>=1'
         # We want to see the same # of batches on each member of the distributed group (GPU),
         # this is enforced by making each worker produce the same # of batches regardless of the
@@ -118,6 +129,9 @@ def create_loader_wds(
     else:
         shared_interval_count = None
 
+    if is_training and naflex_scheduler is not None:
+        task_pipeline = naflex_stage_factory(shared_interval_count)
+
     datapipe = build_data_pipeline(
         shards=shards,
         task_pipeline=task_pipeline,
@@ -153,6 +167,10 @@ def create_loader_wds(
         num_batches=num_batches,
         num_samples=num_samples,
         shared_interval=shared_interval_count,
+        mean_batch_size=(
+            naflex_scheduler.mean_batch_size_for_workers(num_workers_nonzero)
+            if is_training and naflex_scheduler is not None else None
+        ),
     )
 
 

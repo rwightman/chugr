@@ -17,6 +17,19 @@ class DataTaskDocReadCfg(DataTaskCfg):
     render_dpi: int = 150
 
 
+def create_processor_doc_read(cfg: DataTaskDocReadCfg, image_process_fn: Optional[Callable] = None):
+    return DocReadProcessor(
+        image_process_fn=image_process_fn if image_process_fn is not None else cfg.image_process_fn,
+        text_process_fn=cfg.text_process_fn,
+        image_input_feat=cfg.image_input_feat,
+        text_input_feat=cfg.text_input_feat,
+        text_target_feat=cfg.text_target_feat,
+        page_sampling=cfg.page_sampling,
+        render_dpi=cfg.render_dpi,
+        flatten_json=cfg.flatten_json,
+    )
+
+
 def build_task_pipeline_doc_read(
         cfg: DataTaskDocReadCfg,
 ):
@@ -25,21 +38,7 @@ def build_task_pipeline_doc_read(
 
     # document decoding & pre-processing done together, there is coupling in random page
     # selection and in the future, masking of image and/or text
-    pipe += [
-        wds.map(
-            DocReadProcessor(
-                image_process_fn=cfg.image_process_fn,
-                text_process_fn=cfg.text_process_fn,
-                image_input_feat=cfg.image_input_feat,
-                text_input_feat=cfg.text_input_feat,
-                text_target_feat=cfg.text_target_feat,
-                page_sampling=cfg.page_sampling,
-                render_dpi=cfg.render_dpi,
-                flatten_json=cfg.flatten_json,
-            ),
-            handler=handler,
-        )
-    ]
+    pipe += [wds.map(create_processor_doc_read(cfg), handler=handler)]
 
     if cfg.output_tuple:
         # NOTE in this mode we lose '_parse' key and would need to derive from target

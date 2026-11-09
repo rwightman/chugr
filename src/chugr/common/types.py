@@ -28,6 +28,7 @@ class LoaderBundle:
     num_samples: int = 0
     sampler: DistributedSampler = None
     shared_interval: SharedCount = None
+    mean_batch_size: Optional[float] = None  # set for variable batch size (NaFlex schedule) loaders
 
     def set_interval(self, interval):
         if self.shared_interval is not None:

@@ -179,6 +179,15 @@ class DataArg(Serializable):
     persistent_workers: bool = True
     num_workers: int = 4
 
+    # NaFlex schedule driven batching (variable resolution buckets w/ token budget batch sizes), enabled when
+    # naflex_seq_lens is set (batch_size is then ignored for training). Requires resampled (infinite) shards.
+    naflex_seq_lens: Optional[List[int]] = None
+    naflex_seq_len_probs: Optional[List[float]] = None
+    naflex_max_tokens: Optional[int] = None  # tokens (patches + text) per batch per rank
+    naflex_text_tokens: int = 0  # per row text token cost added when sizing batches
+    naflex_batch_divisor: int = 8
+    length_bucketing: bool = False  # pool sort samples by annotation text length
+
 
 def split_sources(
         source: str,
@@ -275,6 +284,15 @@ class DataCfg(Serializable):
     persistent_workers: bool = True
     num_workers: int = 4
 
+    # NaFlex schedule driven batching (variable resolution buckets w/ token budget batch sizes), enabled when
+    # naflex_seq_lens is set (batch_size is then ignored for training). Requires resampled (infinite) shards.
+    naflex_seq_lens: Optional[List[int]] = None
+    naflex_seq_len_probs: Optional[List[float]] = None
+    naflex_max_tokens: Optional[int] = None  # tokens (patches + text) per batch per rank
+    naflex_text_tokens: int = 0  # per row text token cost added when sizing batches
+    naflex_batch_divisor: int = 8
+    length_bucketing: bool = False  # pool sort samples by annotation text length
+
     @classmethod
     def from_arg(cls, data_arg: DataArg):
         sources, num_samples = split_sources(
@@ -294,6 +312,12 @@ class DataCfg(Serializable):
             multi_interval=data_arg.multi_interval,
             persistent_workers=data_arg.persistent_workers,
             num_workers=data_arg.num_workers,
+            naflex_seq_lens=data_arg.naflex_seq_lens,
+            naflex_seq_len_probs=data_arg.naflex_seq_len_probs,
+            naflex_max_tokens=data_arg.naflex_max_tokens,
+            naflex_text_tokens=data_arg.naflex_text_tokens,
+            naflex_batch_divisor=data_arg.naflex_batch_divisor,
+            length_bucketing=data_arg.length_bucketing,
         )
 
     @property

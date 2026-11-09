@@ -11,15 +11,23 @@ def is_naflex_sample(elem) -> bool:
     return isinstance(elem, collections.abc.Mapping) and all(k in elem for k in NAFLEX_KEYS)
 
 
-def collate_naflex(batch: List[Dict[str, torch.Tensor]], pad_multiple: int = 8) -> Dict[str, torch.Tensor]:
+def collate_naflex(
+        batch: List[Dict[str, torch.Tensor]],
+        pad_multiple: int = 8,
+        pad_to: Optional[int] = None,
+) -> Dict[str, torch.Tensor]:
     """ Pad variable length patch sequences (NaFlex) to the longest in the batch.
 
     Args:
         batch: list of dicts w/ 'patches' [N, D] (or [N, Ph, Pw, C]), 'patch_coord' [N, 2], 'patch_valid' [N]
         pad_multiple: round padded length up to a multiple of this (kernel friendly shapes)
+        pad_to: pad to this fixed length (e.g. the NaFlex seq_len bucket) instead of the batch max
     """
     max_len = max(b['patches'].shape[0] for b in batch)
-    if pad_multiple > 1:
+    if pad_to is not None:
+        assert max_len <= pad_to, f'NaFlex sample length {max_len} exceeds bucket seq_len {pad_to}'
+        max_len = pad_to
+    elif pad_multiple > 1:
         max_len = ((max_len + pad_multiple - 1) // pad_multiple) * pad_multiple
     batch_size = len(batch)
     patch_shape = batch[0]['patches'].shape[1:]

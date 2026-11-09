@@ -15,6 +15,7 @@ class DataTaskCfg:
     """
     decode_fn: Optional[Callable] = None
     image_process_fn: Optional[Callable] = None
+    image_process_factory: Optional[Callable] = None  # seq_len -> image process fn (NaFlex bucketed batching)
     text_process_fn: Optional[Callable] = None
     decode_and_process_fn: Optional[Callable] = None
     output_tuple: bool = False  # output features as tuple instead of dictionary

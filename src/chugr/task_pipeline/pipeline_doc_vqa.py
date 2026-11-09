@@ -75,6 +75,24 @@ class DataTaskDocVqaCfg(DataTaskCfg):
     render_dpi: int = 144
 
 
+def create_processor_doc_vqa(cfg: DataTaskDocVqaCfg, image_process_fn: Optional[Callable] = None):
+    return DocVqaProcessor(
+        image_process_fn=image_process_fn if image_process_fn is not None else cfg.image_process_fn,
+        text_process_fn=cfg.text_process_fn,
+        image_input_feat=cfg.image_input_feat,
+        text_input_feat=cfg.text_input_feat,
+        text_target_feat=cfg.text_target_feat,
+        question_feat=cfg.question_feat,
+        answer_feat=cfg.answer_feat,
+        question_id_feat=cfg.question_id_feat,
+        render_dpi=cfg.render_dpi,
+        question_prefix=cfg.question_prefix,
+        question_suffix=cfg.question_suffix,
+        answer_prefix=cfg.answer_prefix,
+        answer_suffix=cfg.answer_suffix,
+    )
+
+
 def build_task_pipeline_doc_vqa(
         cfg: DataTaskDocVqaCfg,
 ):
@@ -82,26 +100,7 @@ def build_task_pipeline_doc_vqa(
     # selection and in the future, masking of image and/or text
     handler = get_error_handler(cfg.error_handler)
 
-    pipe = [
-        wds.map(
-            DocVqaProcessor(
-                image_process_fn=cfg.image_process_fn,
-                text_process_fn=cfg.text_process_fn,
-                image_input_feat=cfg.image_input_feat,
-                text_input_feat=cfg.text_input_feat,
-                text_target_feat=cfg.text_target_feat,
-                question_feat=cfg.question_feat,
-                answer_feat=cfg.answer_feat,
-                question_id_feat=cfg.question_id_feat,
-                render_dpi=cfg.render_dpi,
-                question_prefix=cfg.question_prefix,
-                question_suffix=cfg.question_suffix,
-                answer_prefix=cfg.answer_prefix,
-                answer_suffix=cfg.answer_suffix,
-            ),
-            handler=handler,
-        )
-    ]
+    pipe = [wds.map(create_processor_doc_vqa(cfg), handler=handler)]
 
     if cfg.output_tuple:
         # NOTE in this mode we lose '_parse' key and would need to derive from target

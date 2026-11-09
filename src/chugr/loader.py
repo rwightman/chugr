@@ -112,6 +112,12 @@ def create_loader_from_config_wds(
 
     handler = get_error_handler(task_cfg.error_handler)
 
+    naflex_scheduler = None
+    naflex_stage_factory = None
+    if is_training and data_cfg.naflex_seq_lens:
+        naflex_scheduler, naflex_stage_factory = _create_naflex_batching(
+            data_cfg, task_cfg, seed=seed, world_size=distributed.world_size, handler=handler)
+
     return create_loader_wds(
         shards=data_cfg.shard_spec,
         task_pipeline=task_pipeline,
@@ -127,7 +133,43 @@ def create_loader_from_config_wds(
         seed=seed,
         handler=handler,
         distributed=distributed,
+        naflex_scheduler=naflex_scheduler,
+        naflex_stage_factory=naflex_stage_factory,
     )
+
+
+def _create_naflex_batching(data_cfg: DataCfg, task_cfg: DataTaskCfg, seed: int, world_size: int, handler):
+    from chugr.naflex import LengthBucketer, NaFlexBatchScheduler, NaFlexBatcher
+    from chugr.task_pipeline import create_task_processor
+
+    assert task_cfg.image_process_factory is not None, \
+        'NaFlex batching requires task_cfg.image_process_factory (seq_len -> image process fn).'
+    assert data_cfg.num_samples, 'NaFlex batching requires num_samples (per interval).'
+    max_tokens = data_cfg.naflex_max_tokens or (data_cfg.batch_size or 1) * max(data_cfg.naflex_seq_lens)
+    scheduler = NaFlexBatchScheduler(
+        seq_lens=data_cfg.naflex_seq_lens,
+        max_tokens_per_batch=max_tokens,
+        num_samples=data_cfg.num_samples,
+        seq_len_probs=data_cfg.naflex_seq_len_probs,
+        per_row_text_tokens=data_cfg.naflex_text_tokens,
+        batch_divisor=data_cfg.naflex_batch_divisor,
+        seed=seed,
+        world_size=world_size,
+    )
+    processors = {
+        s: create_task_processor(task_cfg, image_process_fn=task_cfg.image_process_factory(s))
+        for s in scheduler.seq_lens
+    }
+    image_key = getattr(task_cfg, 'image_input_feat').output_name
+
+    def _stage_factory(interval):
+        stages = []
+        if data_cfg.length_bucketing:
+            stages.append(LengthBucketer(seed=seed, interval=interval))
+        stages.append(NaFlexBatcher(scheduler, processors, image_key=image_key, interval=interval, handler=handler))
+        return stages
+
+    return scheduler, _stage_factory
 
 
 def create_loader_from_config_hf(
