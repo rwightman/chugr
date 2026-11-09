@@ -9,7 +9,7 @@ authors = [
 ]
 description = ""
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 keywords = ["webdataset", "datasets", "sharded", "cluster", "scale", "documents"]
 license = {text = "Apache-2.0"}
 classifiers = [
@@ -33,7 +33,7 @@ dependencies = [
         "datasets",
         "timm",
         "torch",
-        "simple_parsing",
+        "pyyaml",
         "pypdfium2",
 ]
 dynamic = ["version"]
@@ -46,7 +46,7 @@ repository = "https://github.com/huggingface/chug"
 # albumentations (nougat augs)
 alb = [
         "albumentations",
-        'cv2',
+        'opencv-python-headless',
 ]
 
 [tool.pdm.version]

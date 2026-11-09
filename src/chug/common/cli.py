@@ -64,7 +64,7 @@ def _arg_spec(tp):
         if len(args) == 2 and args[1] is Ellipsis:
             return '+', _scalar_parser(args[0])
         item_tp = args[0] if args else str
-        return (len(args) if args else '+'), _scalar_parser(item_tp)
+        return '+', _scalar_parser(item_tp)  # length validated when building the dataclass
     if origin is list:
         return '+', _scalar_parser(args[0] if args else str)
     if _is_union(tp):
@@ -189,6 +189,8 @@ def parse_args(
     for dotted, value in vars(args).items():
         if dotted == 'config' or dotted.startswith('__sg_'):
             continue
+        if isinstance(value, list) and len(value) == 1 and value[0] is None:
+            value = None  # e.g. `--input.size none` for an Optional[Tuple]
         _set_nested(merged, dotted, value)
 
     # build nested dataclasses

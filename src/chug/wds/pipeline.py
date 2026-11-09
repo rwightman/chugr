@@ -25,6 +25,7 @@ def build_data_pipeline(
         collate_fn: Optional[Callable] = None,
         batched_task_pipeline: Optional[List[Callable]] = None,
         handler=wds.reraise_exception,
+        max_samples: Optional[int] = None,
 ):
     """
 
@@ -104,6 +105,10 @@ def build_data_pipeline(
 
     # task specific decode and map pipline (per-sample)
     datapipe.extend(task_pipeline)
+
+    if not is_training and max_samples:
+        # limit eval samples (per worker, exact w/ num_workers <= 1)
+        datapipe.append(wds.slice(max_samples))
 
     # collation, tensor output disabled with batch_size == 0 or None
     if batch_size:

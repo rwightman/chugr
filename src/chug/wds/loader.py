@@ -132,6 +132,7 @@ def create_loader_wds(
         sample_shuffle_size=sample_shuffle_size,
         handler=handler,
         collate_fn=collate_fn,
+        max_samples=None if is_training else num_samples,
     )
 
     dl_generator = torch.Generator()

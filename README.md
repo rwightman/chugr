@@ -23,6 +23,13 @@ This library is still a WIP, consider this an alpha release (pre announcement). 
 * Documentation & unit-tests
 * Support reading of info .json/.yaml files for automatic shard info resolution for webdatasets (like timm)
 
+### Recent (revive branch)
+* `simple_parsing` dependency replaced by a minimal `Serializable` mixin and nested dataclass CLI parser (`chug.common.parse_args`)
+* NaFlex (native aspect, variable resolution) document transforms (`doc_naflex`) producing patch sequences + coords, padded by `chug.common.collate`
+* Fixes for `doc_basic` / `doc_better` train transforms, albumentations 2.x support for `doc_nougat`
+* HF datasets loader: shuffled & sharded `IntervalSampler` for training (w/ intervals shorter than an epoch), split slicing (`train[:1000]`)
+* `python -m chug.app.test` to benchmark loaders and dump (reassembled) samples
+
 ### Mediumish
 * Option to output bbox annotations for lines (or word + word output) for tasks that leverage layout
 * Unified preprocessor functions for combined image + text tokenization (img+text token interleaving, etc.)
