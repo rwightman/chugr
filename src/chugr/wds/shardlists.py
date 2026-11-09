@@ -16,9 +16,17 @@ class ShuffledShardList(IterableDataset):
             seed=0,
             interval=-1,
             num_sub_intervals=None,
+            repeat: bool = False,
     ):
-        """Iterate through the list of shards."""
+        """Iterate through the list of shards.
+
+        Args:
+            repeat: cycle through the shards indefinitely (each pass reshuffled w/ a seed shared by all
+                ranks / workers so node / worker splitting stays consistent), for schedule driven loaders that
+                need an infinite sample stream w/o sampling shards with replacement.
+        """
         super().__init__()
+        self.repeat = repeat
         self.urls = expand_urls(urls)
         assert len(self.urls) and isinstance(self.urls[0], str)
         self.seed = seed
@@ -41,22 +49,29 @@ class ShuffledShardList(IterableDataset):
             self.interval += 1
             interval = self.interval
 
-        if self.seed is not None:
-            # Shuffle with the same seed across all nodes/workers in each interval or super interval
-            if self.num_sub_intervals is None:
-                seed = self.seed + interval
-            else:
-                # Keep shuffling consistent across the super epochs
-                seed = self.seed + (interval // self.num_sub_intervals)
-            random.Random(seed).shuffle(urls)
+        pass_idx = 0
+        while True:
+            pass_urls = list(urls)
+            if self.seed is not None:
+                # Shuffle with the same seed across all nodes/workers in each interval or super interval
+                if self.num_sub_intervals is None:
+                    seed = self.seed + interval
+                else:
+                    # Keep shuffling consistent across the super epochs
+                    seed = self.seed + (interval // self.num_sub_intervals)
+                random.Random(seed * 1000003 + pass_idx if pass_idx else seed).shuffle(pass_urls)
 
-        # Restrict to shards in the sub epoch if needed
-        if self.num_sub_intervals is not None:
-            urls = urls[interval % self.num_sub_intervals::self.num_sub_intervals]
+            # Restrict to shards in the sub epoch if needed
+            if self.num_sub_intervals is not None:
+                pass_urls = pass_urls[interval % self.num_sub_intervals::self.num_sub_intervals]
 
-        # Yield shards
-        for url in urls:
-            yield dict(url=url)
+            # Yield shards
+            for url in pass_urls:
+                yield dict(url=url)
+
+            if not self.repeat:
+                break
+            pass_idx += 1
 
 
 class ResampledShardsV2(IterableDataset):

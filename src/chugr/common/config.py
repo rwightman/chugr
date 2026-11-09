@@ -180,7 +180,7 @@ class DataArg(Serializable):
     num_workers: int = 4
 
     # NaFlex schedule driven batching (variable resolution buckets w/ token budget batch sizes), enabled when
-    # naflex_seq_lens is set (batch_size is then ignored for training). Requires resampled (infinite) shards.
+    # naflex_seq_lens is set (batch_size is then ignored for training).
     naflex_seq_lens: Optional[List[int]] = None
     naflex_seq_len_probs: Optional[List[float]] = None
     naflex_max_tokens: Optional[int] = None  # tokens (patches + text) per batch per rank
@@ -285,7 +285,7 @@ class DataCfg(Serializable):
     num_workers: int = 4
 
     # NaFlex schedule driven batching (variable resolution buckets w/ token budget batch sizes), enabled when
-    # naflex_seq_lens is set (batch_size is then ignored for training). Requires resampled (infinite) shards.
+    # naflex_seq_lens is set (batch_size is then ignored for training).
     naflex_seq_lens: Optional[List[int]] = None
     naflex_seq_len_probs: Optional[List[float]] = None
     naflex_max_tokens: Optional[int] = None  # tokens (patches + text) per batch per rank

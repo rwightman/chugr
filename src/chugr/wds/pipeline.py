@@ -26,6 +26,7 @@ def build_data_pipeline(
         batched_task_pipeline: Optional[List[Callable]] = None,
         handler=wds.reraise_exception,
         max_samples: Optional[int] = None,
+        repeat_shards: bool = False,
 ):
     """
 
@@ -68,6 +69,7 @@ def build_data_pipeline(
                 shards.urls,
                 seed=seed,
                 interval=shared_interval_count,
+                repeat=repeat_shards,
             )]
         else:
             datapipe = [wds.SimpleShardList(

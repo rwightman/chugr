@@ -60,7 +60,8 @@ IDL = '/home/wiggs/work/pp/data/idl/idl-train-0000{0..3}.tar'
 
 
 @pytest.mark.skipif(not os.path.exists('/home/wiggs/work/pp/data/idl/idl-train-00000.tar'), reason='local IDL shards')
-def test_naflex_doc_read_loader():
+@pytest.mark.parametrize('resampled', [True, False])
+def test_naflex_doc_read_loader(resampled):
     import functools
     import chugr
     from chugr.common import DataCfg, ImageInputCfg
@@ -75,7 +76,7 @@ def test_naflex_doc_read_loader():
         text_process_fn=chugr.create_text_preprocessor('facebook/bart-base', max_length=256),
         error_handler='log_and_continue',
     )
-    data_cfg = DataCfg(source=IDL, num_samples=64, num_workers=2, resampled=True,
+    data_cfg = DataCfg(source=IDL, num_samples=64, num_workers=2, resampled=resampled,
                        naflex_seq_lens=[256, 512], naflex_max_tokens=4096, naflex_batch_divisor=1, length_bucketing=True)
     lb = chugr.create_loader(data_cfg, task_cfg, is_training=True)
     lb.set_interval(0)
@@ -85,3 +86,11 @@ def test_naflex_doc_read_loader():
         p = b['image_input']['patches']
         assert p.shape[1] in (256, 512) and p.shape[0] * p.shape[1] <= 4096
         assert b['text_input'].shape[0] == p.shape[0]
+
+
+def test_repeating_shard_list():
+    from chugr.wds.shardlists import ShuffledShardList
+    it = iter(ShuffledShardList([f's{i}' for i in range(5)], seed=1, interval=0, repeat=True))
+    urls = [next(it)['url'] for _ in range(15)]
+    assert sorted(urls[:5]) == sorted(urls[5:10]) == sorted(urls[10:]) == [f's{i}' for i in range(5)]
+    assert urls[:5] != urls[5:10]  # each pass reshuffled

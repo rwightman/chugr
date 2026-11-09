@@ -86,8 +86,8 @@ def create_loader_wds(
     num_batches_per_worker = 0
     num_workers_nonzero = max(num_workers, 1)
     if is_training and naflex_scheduler is not None:
-        # schedule driven batching, each worker yields its share of the rank identical schedule per interval
-        assert resampled, 'NaFlex schedule batching requires resampled (infinite) shards.'
+        # schedule driven batching, each worker yields its share of the rank identical schedule per interval,
+        # the sample stream must not run dry -> resampled shards, or (w/o replacement) repeating shard lists
         num_batches = naflex_scheduler.num_batches_for_workers(num_workers_nonzero)
         num_samples = naflex_scheduler.num_samples_for_workers(num_workers_nonzero)
         batch_size = 0
@@ -147,6 +147,7 @@ def create_loader_wds(
         handler=handler,
         collate_fn=collate_fn,
         max_samples=None if is_training else num_samples,
+        repeat_shards=is_training and naflex_scheduler is not None and not resampled,
     )
 
     dl_generator = torch.Generator()

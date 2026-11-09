@@ -10,8 +10,8 @@ Adapted from the open_clip NaFlex streaming data pipeline:
   batch is full (equal step shapes across ranks), and collates patches padded to the bucket seq_len.
 * LengthBucketer: reorders samples so similar (text) lengths batch together, reduces decoder padding.
 
-NOTE schedule driven batching expects an effectively infinite sample stream (resampled shards) so that every
-rank / worker can always fill its schedule.
+NOTE schedule driven batching needs an effectively infinite sample stream so every rank / worker can always fill
+its schedule, the loader uses resampled shards or (w/o replacement) a repeating, per-pass reshuffled shard list.
 """
 import json
 import logging
