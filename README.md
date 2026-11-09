@@ -31,11 +31,19 @@ This library is still a WIP, consider this an alpha release (pre announcement). 
 * Fixes for `doc_basic` / `doc_better` train transforms, albumentations 2.x support for `doc_nougat`
 * HF datasets loader: shuffled & sharded `IntervalSampler` for training (w/ intervals shorter than an epoch), split slicing (`train[:1000]`)
 * `python -m chugr.app.test` to benchmark loaders and dump (reassembled) samples
+* NaFlex batching (`chugr.naflex`, adapted from OpenCLIP's streaming NaFlex loader): a rank-identical schedule of
+  `(seq_len, batch_size)` per batch drawn from `naflex_seq_lens` / `naflex_seq_len_probs` and sized to a token budget
+  (`naflex_max_tokens`, w/ optional per row `naflex_text_tokens` cost), samples are resized to each batch's patch
+  budget. `length_bucketing` pool sorts samples by target text length. `mean_batch_size` is exposed on the loader for
+  loss scaling.
+* Webdataset shard lists repeat (reshuffled per pass) instead of requiring `resampled`, so fixed sample count
+  intervals and NaFlex batching work w/o sampling shards w/ replacement
 
 ### Mediumish
 * Option to output bbox annotations for lines (or word + word output) for tasks that leverage layout
 * Unified preprocessor functions for combined image + text tokenization (img+text token interleaving, etc.)
-* Image token (patch) packing ala NaViT. Online bin packing based algorithms integrated with image preprocessing and pipeline.
+* Image token (patch) packing ala NaViT. Online bin packing based algorithms integrated with image preprocessing and pipeline (NaFlex style padded batching per sequence length bucket is supported now).
+* NaFlex batching for the HF datasets loader
 
 ### Longish 
 * Increase range of task pipelines for other tasks, modelling needs
@@ -111,6 +119,11 @@ Task specific pipelines, where dataset formats meet modelling needs.
 Inputs to task pipelines are sample dictionaries based on the dataset form, they are decoded and then processed into outputs that match model input requirements.
 
 Task specific pipelines that handle the data <--> model input interface are inserted into an encompassing data pipeline which handles shard lists, shuffle, wrapping, distributed worker, splitting, batching, etc.
+
+#### `naflex`
+
+NaFlex (variable sequence length) batching helpers: `NaFlexBatchScheduler` (rank-identical seq len / batch size
+schedule from a token budget), `NaFlexBatcher` (per seq len processors + batching), `LengthBucketer`.
 
 #### `chugr.loader`
 
