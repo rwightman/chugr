@@ -3,7 +3,7 @@ requires = ["pdm-backend"]
 build-backend = "pdm.backend"
 
 [project]
-name = "chug"
+name = "chugr"
 authors = [
     {name = "Ross Wightman", email = "ross@huggingface.co"},
 ]
@@ -39,8 +39,8 @@ dependencies = [
 dynamic = ["version"]
 
 [project.urls]
-homepage = "https://github.com/huggingface/chug"
-repository = "https://github.com/huggingface/chug"
+homepage = "https://github.com/rwightman/chugr"
+repository = "https://github.com/rwightman/chugr"
 
 [project.optional-dependencies]
 # albumentations (nougat augs)
@@ -51,4 +51,4 @@ alb = [
 
 [tool.pdm.version]
 source = "file"
-path = "src/chug/version.py"
+path = "src/chugr/version.py"

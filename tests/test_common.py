@@ -3,8 +3,8 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 
-from chug.common import DataArg, DataCfg, ImageInputCfg, Serializable, SourceSpec, collate, parse_args
-from chug.text import text_input_to_target
+from chugr.common import DataArg, DataCfg, ImageInputCfg, Serializable, SourceSpec, collate, parse_args
+from chugr.text import text_input_to_target
 
 
 @dataclass
