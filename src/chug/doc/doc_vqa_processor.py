@@ -17,7 +17,8 @@ class DocVqaProcessor(DocProcessor):
             answer_feat: FeatureInfo = DEFAULT_ANSWER_FEAT,
             multi_qa_feat: Optional[FeatureInfo] = None,
             image_input_feat: ImageFeatureInfo = DEFAULT_DOC_FEAT,
-            text_target_feat: FeatureInfo = FeatureInfo('text_target', input_key=None),
+            text_input_feat: FeatureInfo = FeatureInfo('text_input', input_key=None),
+            text_target_feat: Optional[FeatureInfo] = FeatureInfo('text_target', input_key=None),
             question_prefix: Optional[str] = '<s_question>',
             question_suffix: Optional[str] = '</s_question>',
             answer_prefix: Optional[str] = '<s_answer>',
@@ -32,6 +33,7 @@ class DocVqaProcessor(DocProcessor):
             image_process_fn=image_process_fn,
             text_process_fn=text_process_fn,
             image_input_feat=image_input_feat,
+            text_input_feat=text_input_feat,
             text_target_feat=text_target_feat,
             render_dpi=render_dpi,
             squeeze_pages=squeeze_pages,
@@ -74,8 +76,10 @@ class DocVqaProcessor(DocProcessor):
             question_id = _get_value(self.question_id_key, sample)
             answers = _get_value(self.answer_key, sample)
 
-            if answers is not None and self.text_target_feat is not None:
-                answer = random.choice(answers)
+            if isinstance(answers, str):
+                answers = [answers]
+            if answers and self.text_target_feat is not None:
+                answer = self.generator.choice(answers)
             else:
                 answer = None
 

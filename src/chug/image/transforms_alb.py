@@ -12,6 +12,8 @@ try:
 except ImportError:
     has_cv2 = False
 
+import random
+
 import numpy as np
 
 
@@ -34,8 +36,8 @@ class AlbWrapper:
 if has_albumentations and has_cv2:
 
     class ErosionAlb(alb.ImageOnlyTransform):
-        def __init__(self, scale, always_apply=False, p=0.5):
-            super().__init__(always_apply=always_apply, p=p)
+        def __init__(self, scale, p=0.5):
+            super().__init__(p=p)
             if type(scale) is tuple or type(scale) is list:
                 assert len(scale) == 2
                 self.scale = scale
@@ -43,19 +45,19 @@ if has_albumentations and has_cv2:
                 self.scale = (scale, scale)
 
         def get_transform_init_args_names(self):
-            return ()
+            return ('scale',)
 
         def apply(self, img, **params):
             kernel = cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE, tuple(np.random.randint(self.scale[0], self.scale[1] + 1, 2))
+                cv2.MORPH_ELLIPSE, tuple(int(k) for k in random.choices(range(self.scale[0], self.scale[1] + 1), k=2))
             )
             img = cv2.erode(img, kernel, iterations=1)
             return img
 
 
     class DilationAlb(alb.ImageOnlyTransform):
-        def __init__(self, scale, always_apply=False, p=0.5):
-            super().__init__(always_apply=always_apply, p=p)
+        def __init__(self, scale, p=0.5):
+            super().__init__(p=p)
             if type(scale) is tuple or type(scale) is list:
                 assert len(scale) == 2
                 self.scale = scale
@@ -63,25 +65,25 @@ if has_albumentations and has_cv2:
                 self.scale = (scale, scale)
 
         def get_transform_init_args_names(self):
-            return ()
+            return ('scale',)
 
         def apply(self, img, **params):
             kernel = cv2.getStructuringElement(
                 cv2.MORPH_ELLIPSE,
-                tuple(np.random.randint(self.scale[0], self.scale[1] + 1, 2))
+                tuple(int(k) for k in random.choices(range(self.scale[0], self.scale[1] + 1), k=2))
             )
             img = cv2.dilate(img, kernel, iterations=1)
             return img
 
 
     class BitmapAlb(alb.ImageOnlyTransform):
-        def __init__(self, value=0, lower=200, always_apply=False, p=0.5):
-            super().__init__(always_apply=always_apply, p=p)
+        def __init__(self, value=0, lower=200, p=0.5):
+            super().__init__(p=p)
             self.lower = lower
             self.value = value
 
         def get_transform_init_args_names(self):
-            return ()
+            return ('value', 'lower')
 
         def apply(self, img, **params):
             img = img.copy()

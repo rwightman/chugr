@@ -1,7 +1,8 @@
 from copy import deepcopy
 from typing import Callable, List, Optional
 
-from torch.utils.data import DataLoader, DistributedSampler
+import torch
+from torch.utils.data import DataLoader, DistributedSampler, Sampler
 
 from chug.common import LoaderBundle, DistributedCfg, SharedCount
 
@@ -9,6 +10,52 @@ from .collate import HfCollate
 from .wrappers import SafeDataset, WrappedIterableDataset
 
 _SAMPLE_SHUFFLE_SIZE = 2000
+
+
+class IntervalSampler(Sampler):
+    """ Shuffled, rank sharded sampler w/ an optional per-interval sample limit (for intervals < 1 epoch).
+
+    Each interval draws a fresh permutation (seed + interval), samples are consumed sequentially across
+    intervals so that short intervals still cycle through the full dataset.
+    """
+
+    def __init__(
+            self,
+            dataset,
+            num_samples: Optional[int] = None,
+            rank: int = 0,
+            world_size: int = 1,
+            seed: int = 0,
+            interval: int = 0,
+    ):
+        self.dataset_len = len(dataset)
+        self.world_size = world_size
+        self.rank = rank
+        self.seed = seed
+        self.interval = interval
+        total = min(num_samples, self.dataset_len) if num_samples else self.dataset_len
+        self.num_samples_per_rank = total // world_size
+
+    def set_epoch(self, interval: int):
+        self.interval = interval
+
+    def __len__(self):
+        return self.num_samples_per_rank
+
+    def __iter__(self):
+        per_interval = self.num_samples_per_rank * self.world_size
+        start = self.interval * per_interval
+        epoch, offset = divmod(start, self.dataset_len)
+        indices = []
+        while len(indices) < per_interval:
+            g = torch.Generator()
+            g.manual_seed(self.seed + epoch)
+            perm = torch.randperm(self.dataset_len, generator=g).tolist()
+            indices.extend(perm[offset:])
+            offset = 0
+            epoch += 1
+        indices = indices[:per_interval]
+        return iter(indices[self.rank::self.world_size])
 
 
 def _disable_decode(ds):
@@ -145,30 +192,39 @@ def create_loader_hf(
         )
 
     else:
+        # split may include slicing, e.g. 'train[:1000]' or 'validation[:10%]'
         dataset = load_dataset(
             source,
             data_dir=data_dir,
-            verification_mode=VerificationMode.ALL_CHECKS,
+            split=split,
+            verification_mode=VerificationMode.BASIC_CHECKS,
         )
-
-        if split not in dataset:
-            assert False, f'Split {split} not in dataset ({dataset.keys()})'
-        dataset = dataset[split]
+        if not is_training and num_samples and num_samples < len(dataset):
+            dataset = dataset.select(range(num_samples))
         if disable_decode:
             dataset = _disable_decode(dataset)
         dataset = SafeDataset(dataset)
 
-        sampler = None
-        if distributed.world_size > 1:
+        if is_training:
+            # shuffled (per interval), sharded by rank, optionally limited to num_samples per interval
+            sampler = IntervalSampler(
+                dataset,
+                num_samples=num_samples,
+                rank=distributed.global_rank,
+                world_size=distributed.world_size,
+                seed=seed,
+                interval=start_interval,
+            )
+        elif distributed.world_size > 1:
             sampler = DistributedSampler(
                 dataset,
                 rank=distributed.global_rank,
-                shuffle=is_training,
-                seed=seed,
+                shuffle=False,
                 num_replicas=distributed.world_size,
                 drop_last=False,
             )
-            sampler.set_epoch(start_interval)
+        else:
+            sampler = None
 
         base_loader = DataLoader(
             dataset=dataset,
@@ -177,12 +233,13 @@ def create_loader_hf(
             drop_last=is_training,
             batch_size=batch_size,
             num_workers=num_workers,
+            persistent_workers=persistent_workers and num_workers > 0,
         )
 
         loader = LoaderBundle(
             loader=base_loader,
             num_batches=len(base_loader),
-            num_samples=len(dataset),
+            num_samples=len(sampler) * distributed.world_size if sampler is not None else len(dataset),
             sampler=sampler,
         )
 

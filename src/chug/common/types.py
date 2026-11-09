@@ -32,7 +32,7 @@ class LoaderBundle:
     def set_interval(self, interval):
         if self.shared_interval is not None:
             self.shared_interval.set_value(interval)
-        if self.sampler is not None and isinstance(self.sampler, DistributedSampler):
+        if self.sampler is not None and hasattr(self.sampler, 'set_epoch'):
             self.sampler.set_epoch(interval)
 
     def __iter__(self):

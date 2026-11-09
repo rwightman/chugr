@@ -1,7 +1,8 @@
 from typing import Any, Dict, Optional, Union
 
 from chug.common import ImageInputCfg, ImageAugCfg
-from .build_transforms_doc import build_transforms_doc_better, build_transforms_doc_nougat, build_transforms_doc_basic
+from .build_transforms_doc import build_transforms_doc_better, build_transforms_doc_nougat, build_transforms_doc_basic, \
+    build_transforms_doc_naflex
 from .build_transforms_image import build_transforms_image_timm, build_transforms_image_basic
 
 _transform_factories = {
@@ -10,6 +11,7 @@ _transform_factories = {
     "doc_basic": build_transforms_doc_basic,
     "doc_nougat": build_transforms_doc_nougat,
     "doc_better": build_transforms_doc_better,
+    "doc_naflex": build_transforms_doc_naflex,
 }
 
 def build_image_transforms(

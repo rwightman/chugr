@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field, fields, replace
 from typing import Any, Dict, List, Optional, Tuple, Union, Sequence, Callable
 
-from simple_parsing.helpers import Serializable
+from .serialize import Serializable
 
 from .types import ImageFeatureInfo, ShardSpec, SourceSpec
 from .urls import expand_urls
@@ -26,6 +26,8 @@ class ImageInputCfg(Serializable):
     align_long_axis: Optional[bool] = False
     transform_type: Optional[str] = 'image_basic'
     resize_mode: Optional[str] = 'shortest'
+    patch_size: Optional[int] = None  # patch size for naflex (variable aspect / resolution) transforms
+    max_seq_len: Optional[int] = None  # max patch sequence length for naflex transforms
 
     @property
     def image_chs(self):
@@ -275,14 +277,16 @@ class DataCfg(Serializable):
 
     @classmethod
     def from_arg(cls, data_arg: DataArg):
-        sources, _ = split_sources(
+        sources, num_samples = split_sources(
             data_arg.source,
-            data_arg.num_samples,
-            data_arg.num_samples,
+            split=data_arg.split,
+            sampling_weights=data_arg.sampling_weight,
+            num_samples=data_arg.num_samples,
         )
         return cls(
-            source=sources,
-            num_samples=data_arg.num_samples,
+            source=sources if len(sources) > 1 else sources[0],
+            split=data_arg.split,
+            num_samples=num_samples,
             data_dir=data_arg.data_dir,
             batch_size=data_arg.batch_size,
             format=data_arg.format,

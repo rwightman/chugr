@@ -66,7 +66,7 @@ class DataTaskDocVqaCfg(DataTaskCfg):
     question_id_feat: FeatureInfo = DEFAULT_QUESTION_ID_FEAT
     image_input_feat: ImageFeatureInfo = DEFAULT_DOC_FEAT
     text_input_feat: FeatureInfo = FeatureInfo('text_input', input_key=None)
-    text_target_feat: FeatureInfo = FeatureInfo('text_target', input_key=None)
+    text_target_feat: Optional[FeatureInfo] = FeatureInfo('text_target', input_key=None)
     question_prefix: Optional[str] = '<s_question>'
     question_suffix: Optional[str] = '</s_question>'
     answer_prefix: Optional[str] = '<s_answer>'
@@ -88,6 +88,8 @@ def build_task_pipeline_doc_vqa(
                 image_process_fn=cfg.image_process_fn,
                 text_process_fn=cfg.text_process_fn,
                 image_input_feat=cfg.image_input_feat,
+                text_input_feat=cfg.text_input_feat,
+                text_target_feat=cfg.text_target_feat,
                 question_feat=cfg.question_feat,
                 answer_feat=cfg.answer_feat,
                 question_id_feat=cfg.question_id_feat,

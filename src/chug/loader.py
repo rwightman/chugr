@@ -69,9 +69,9 @@ def _validate_cfgs(
     batch_size = data_cfg.batch_size
     if batch_size is not None:
         if task_cfg.decode_and_process_fn is None:
-            # FIXME make validation task specific once we have tasks that don't require both image and text preproc
-            assert task_cfg.image_process_fn is not None and task_cfg.text_process_fn is not None,\
-                'task_cfg.image_process_fn and task_cfg.text_process_fn must be set if batching enabled'
+            # images must be processed into tensors to batch, text may be left as strings (collated as lists)
+            assert task_cfg.image_process_fn is not None, \
+                'task_cfg.image_process_fn must be set if batching enabled'
         else:
             assert task_cfg.decode_fn is None, \
                 'task_cfg.decode_fn should not be set at the same time as task_cfg.decode_and_process_fn'

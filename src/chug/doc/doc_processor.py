@@ -91,20 +91,33 @@ class DocProcessor:
         self.image_input_key = image_input_feat.input_key.split(';')
         self.text_input_feat = text_input_feat
         self.text_input_name = text_input_feat.output_name
-        self.text_input_key = text_input_feat.input_key.split(';')
+        self.text_input_key = text_input_feat.input_key.split(';') if text_input_feat.input_key else None
         self.text_target_feat = text_target_feat
-        self.text_target_name = text_target_feat.output_name
+        self.text_target_name = text_target_feat.output_name if text_target_feat is not None else None
 
         self.page_sampling = page_sampling
         self.render_dpi = render_dpi
         self.squeeze_pages = squeeze_pages
         self.expand_pages = expand_pages
         self.flatten_json = flatten_json
-        self.generator = random.Random()
-        self.generator.seed(seed)
+        self.seed = seed
+        self._generator = random.Random(seed)
+        self._generator_worker = None
         # FIXME note, should move to torchvision v2 annotations at some point
         #  * they should all eventually have a generator arg for better handling random state
         #  * they have forms that accept bbox/points args to transform annotations in sync with image
+
+    @property
+    def generator(self) -> random.Random:
+        # (re)seed per dataloader worker so workers don't produce identical random sequences
+        from torch.utils.data import get_worker_info
+        worker_info = get_worker_info()
+        worker_id = worker_info.id if worker_info is not None else -1
+        if worker_id != self._generator_worker:
+            if worker_info is not None:
+                self._generator = random.Random(worker_info.seed + self.seed)
+            self._generator_worker = worker_id
+        return self._generator
 
     def _preprocess_image_pages(self, decoded_pages, page_image_info=None):
         if self.image_process_fn is None:
@@ -155,6 +168,7 @@ class DocProcessor:
             sample[ext],
             image_mode=image_mode,
             page_indices=page_indices,
+            render_dpi=self.render_dpi,
         )
         if num_anno_pages is not None and num_image_pages != num_anno_pages:
             _logger.warning(

@@ -1,7 +1,37 @@
 import collections
-from typing import Callable, Dict, Optional, Tuple, Type, Union
+from typing import Callable, Dict, List, Optional, Tuple, Type, Union
 
+import torch
 from torch.utils.data._utils.collate import default_collate_fn_map, default_collate_err_msg_format
+
+NAFLEX_KEYS = ('patches', 'patch_coord', 'patch_valid')
+
+
+def is_naflex_sample(elem) -> bool:
+    return isinstance(elem, collections.abc.Mapping) and all(k in elem for k in NAFLEX_KEYS)
+
+
+def collate_naflex(batch: List[Dict[str, torch.Tensor]], pad_multiple: int = 8) -> Dict[str, torch.Tensor]:
+    """ Pad variable length patch sequences (NaFlex) to the longest in the batch.
+
+    Args:
+        batch: list of dicts w/ 'patches' [N, D] (or [N, Ph, Pw, C]), 'patch_coord' [N, 2], 'patch_valid' [N]
+        pad_multiple: round padded length up to a multiple of this (kernel friendly shapes)
+    """
+    max_len = max(b['patches'].shape[0] for b in batch)
+    if pad_multiple > 1:
+        max_len = ((max_len + pad_multiple - 1) // pad_multiple) * pad_multiple
+    batch_size = len(batch)
+    patch_shape = batch[0]['patches'].shape[1:]
+    patches = torch.zeros((batch_size, max_len, *patch_shape), dtype=batch[0]['patches'].dtype)
+    patch_coord = torch.zeros((batch_size, max_len, 2), dtype=torch.int64)
+    patch_valid = torch.zeros((batch_size, max_len), dtype=torch.bool)
+    for i, b in enumerate(batch):
+        n = b['patches'].shape[0]
+        patches[i, :n] = b['patches']
+        patch_coord[i, :n] = b['patch_coord']
+        patch_valid[i, :n] = b['patch_valid']
+    return {'patches': patches, 'patch_coord': patch_coord, 'patch_valid': patch_valid}
 
 
 def collate(batch):
@@ -23,6 +53,9 @@ def collate(batch):
     for collate_type in default_collate_fn_map:
         if isinstance(elem, collate_type):
             return default_collate_fn_map[collate_type](batch)
+
+    if is_naflex_sample(elem):
+        return collate_naflex(batch)
 
     if isinstance(elem, collections.abc.Mapping):
         try:
