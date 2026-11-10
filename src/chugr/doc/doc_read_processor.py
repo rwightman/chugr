@@ -1,8 +1,10 @@
+import json
 from typing import Optional, Callable
 
 from chugr import ImageFeatureInfo, FeatureInfo
 from chugr.doc import DocProcessor, DEFAULT_DOC_FEAT
 from chugr.doc.doc_processor import get_next_valid_page_index, _get_value, _logger
+from chugr.doc.synth_text import SynthTextCfg, SynthTextRenderer
 
 
 class DocReadProcessor(DocProcessor):
@@ -23,7 +25,15 @@ class DocReadProcessor(DocProcessor):
             expand_pages: bool = False,
             flatten_json: bool = True,
             seed: int = 0,
+            synth_prob: float = 0.,
+            synth_cfg: Optional[SynthTextCfg] = None,
     ):
+        """
+        Args:
+            synth_prob: probability of replacing a sample's page image w/ a synthetic rendering of (part of) its
+                annotation text (target == rendered text, no layout annotations used, page image not decoded)
+            synth_cfg: synthetic text rendering config
+        """
         super().__init__(
             image_process_fn=image_process_fn,
             text_process_fn=text_process_fn,
@@ -39,6 +49,62 @@ class DocReadProcessor(DocProcessor):
         )
         self.line_break = line_break
         assert page_sampling in ('random', 'first', 'all_valid', 'all')
+        self.synth_prob = synth_prob
+        self.synth = SynthTextRenderer(synth_cfg) if synth_prob > 0 else None
+
+    def __call__(self, sample):
+        if self.synth is not None and self.generator.random() < self.synth_prob:
+            return self._synth_sample(sample)
+        return super().__call__(sample)
+
+    def _process_text(self, text):
+        """ Tokenize text (if text_process_fn set), returns (text input, text target or None). """
+        if self.text_process_fn is None:
+            return text, None
+        processed = self.text_process_fn(text)
+        assert self.text_input_name in processed, \
+            f"Text input name '{self.text_input_name}' not found in processed sample."
+        target = processed.get(self.text_target_name) if self.text_target_name else None
+        if self.text_target_feat is not None and target is None:
+            assert False, f"Expected a text target named '{self.text_target_name}' in processed sample."
+        return processed[self.text_input_name], target
+
+    def _synth_sample(self, sample):
+        if 'json' in sample:
+            if isinstance(sample['json'], bytes):
+                sample['json'] = json.loads(sample['json'])
+            if self.flatten_json:
+                sample.update(sample.pop('json'))
+        anno = _get_value(self.text_input_key, sample)
+        assert anno, f"No annotation found with keys ({self.text_input_key})."
+        pages = [p['lines'] if 'lines' in p else p for p in anno]
+        valid = [i for i, p in enumerate(pages) if p.get('text')]
+        if not valid:
+            raise RuntimeError("No text on any page, skipping sample...")
+        page_index = self.generator.choice(valid)
+        image, lines = self.synth(pages[page_index]['text'], rng=self.generator)
+        if self.image_input_feat.image_mode and image.mode != self.image_input_feat.image_mode:
+            image = image.convert(self.image_input_feat.image_mode)
+        image = self._preprocess_image_pages([image])[0]
+        text_input, text_target = self._process_text(self.line_break.join(lines))
+
+        output = {
+            self.image_input_name: image,
+            self.text_input_name: text_input,
+            '_parse': {
+                'num_pages': len(anno),
+                'page_indices': [page_index],
+                'page_text': [lines],
+                'synthetic': True,
+            },
+        }
+        if text_target is not None:
+            output[self.text_target_name] = text_target
+        if not self.squeeze_pages:
+            for k in (self.image_input_name, self.text_input_name, self.text_target_name):
+                if k in output:
+                    output[k] = [output[k]]
+        return output
 
     def _process_anno_pages(self, anno):
         assert isinstance(anno, (list, tuple)), f"Annotation should be a list of pages"
@@ -120,21 +186,11 @@ class DocReadProcessor(DocProcessor):
 
             text = self.line_break.join(anno_page["text"])
 
-            # FIXME cleanup, split process and decode for more flexibility
             # tokenize w/ and generate training target if enabled
-            if self.text_process_fn is not None:
-                processed = self.text_process_fn(text)
-                assert self.text_input_name in processed, \
-                    f"Text input name '{self.text_input_name}' not found in processed sample."
-                tokenized_text_pages.append(processed[self.text_input_name])
-                if self.text_target_name in processed:
-                    target_pages.append(processed[self.text_target_name])
-                else:
-                    if self.text_target_feat is not None:
-                        assert False, f"Expected a text target named '{self.text_target_name}' in processed sample."
-            else:
-                # FIXME warn assert that target not supported w/o text preprocessing?
-                tokenized_text_pages.append(text)
+            text_input, text_target = self._process_text(text)
+            tokenized_text_pages.append(text_input)
+            if text_target is not None:
+                target_pages.append(text_target)
 
             text_pages.append(anno_page["text"])  # unencoded text added as lines
 

@@ -5,6 +5,7 @@ import webdataset as wds
 
 from chugr.common import DataTaskCfg, FeatureInfo, ImageFeatureInfo
 from chugr.doc import DocReadProcessor, DEFAULT_DOC_FEAT
+from chugr.doc.synth_text import SynthTextCfg
 from chugr.wds import get_error_handler
 
 
@@ -15,6 +16,8 @@ class DataTaskDocReadCfg(DataTaskCfg):
     text_target_feat: Optional[FeatureInfo] = FeatureInfo('text_target', input_key=None)
     page_sampling: str = 'random'
     render_dpi: int = 150
+    synth_prob: float = 0.  # probability of a synthetic text rendering (of the sample's text) replacing the page
+    synth_cfg: Optional[SynthTextCfg] = None
 
 
 def create_processor_doc_read(cfg: DataTaskDocReadCfg, image_process_fn: Optional[Callable] = None):
@@ -27,6 +30,8 @@ def create_processor_doc_read(cfg: DataTaskDocReadCfg, image_process_fn: Optiona
         page_sampling=cfg.page_sampling,
         render_dpi=cfg.render_dpi,
         flatten_json=cfg.flatten_json,
+        synth_prob=cfg.synth_prob,
+        synth_cfg=cfg.synth_cfg,
     )
 
 
