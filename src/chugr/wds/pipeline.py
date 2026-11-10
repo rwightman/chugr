@@ -1,3 +1,5 @@
+from functools import partial
+from itertools import islice
 from typing import Callable, List, Optional, Sequence, Union
 
 import torch.utils.data
@@ -8,6 +10,15 @@ from chugr.common import ShardSpec, collate
 from .filters import detshuffle_v2
 from .shardlists import ResampledShardsV2, ShuffledShardList
 from .tariterators import tarfile_to_samples_nothrow
+
+
+def split_samples_by_node_and_worker(src, rank: int = 0, world_size: int = 1):
+    """ Split a sample stream that is identical on all ranks / workers, rank r keeps every world_size-th sample
+    (independent of the worker count), its workers split those. """
+    info = torch.utils.data.get_worker_info()
+    num_workers = info.num_workers if info is not None else 1
+    worker_id = info.id if info is not None else 0
+    yield from islice(islice(src, rank, None, world_size), worker_id, None, num_workers)
 
 
 def build_data_pipeline(
@@ -30,6 +41,7 @@ def build_data_pipeline(
         worker_seed: Optional[int] = None,
         rank: int = 0,
         world_size: int = 1,
+        num_workers: int = 0,
 ):
     """
 
@@ -48,12 +60,17 @@ def build_data_pipeline(
         collate_fn:
         batched_task_pipeline: An optional task-specific pipeline for processing batched samples
         handler: Exception handler
-        max_samples: Eval, limit the number of samples (before splitting across ranks)
+        max_samples: Eval, limit the eval set to the first `max_samples` samples of the shard list. Exact for any
+            number of ranks / workers, every worker reads those samples and keeps its share, so leave it unset
+            to evaluate all samples (split by shard where possible).
         repeat_shards: Train w/o resampling, cycle through the shard list (reshuffled each pass)
         worker_seed: Seed for per worker randomness (shard resampling, sample shuffle) when the seed can't be
             recovered from DataLoader workers (num_workers=0), must differ across ranks. Defaults to `seed`.
-        rank: Eval, rank of this process, samples are split across ranks
-        world_size: Eval, number of ranks
+        rank: Rank of this process, shards (train, eval w/ enough shards) or samples (eval) are split across
+            ranks. Passed explicitly, not derived from RANK / WORLD_SIZE env vars or torch.distributed state
+            (neither is reliably visible in dataloader workers for all launchers / start methods).
+        world_size: Number of ranks
+        num_workers: Number of dataloader workers (eval split)
 
     Returns:
 
@@ -89,10 +106,10 @@ def build_data_pipeline(
     # at this point we have an iterator over all the shards
     if is_training:
         if not resampled:
-            datapipe.extend([
-                wds.split_by_node,
-                wds.split_by_worker,
-            ])
+            if world_size > 1:
+                # as wds.split_by_node, w/ the explicit rank
+                datapipe.append(wds.slice(rank, None, world_size))
+            datapipe.append(wds.split_by_worker)
         # at this point, we have an iterator over the shards assigned to each worker at each node
         datapipe.extend([
             tarfile_to_samples_nothrow(handler=handler),
@@ -109,19 +126,31 @@ def build_data_pipeline(
             # ),
         ])
     else:
-        datapipe.extend([
-            wds.split_by_worker,
-            # at this point, we have an iterator over the shards assigned to each worker
-            wds.tarfile_to_samples(handler=handler),
-        ])
         if max_samples:
-            # limit eval samples (per worker, exact w/ num_workers <= 1), before the rank split so the eval set
-            # doesn't change w/ world size
-            datapipe.append(wds.slice(max_samples))
-        if world_size > 1:
-            # split samples (not shards) across ranks, so few (or one) eval shards still split evenly, every
-            # rank reads the same sample stream but only decodes / processes its share
-            datapipe.append(wds.slice(rank, None, world_size))
+            # capped eval set, the first max_samples samples of the shard list for any world size / worker count.
+            # Every worker reads (but doesn't decode / process) that head of the stream and keeps its share.
+            datapipe.extend([
+                wds.tarfile_to_samples(handler=handler),
+                wds.slice(max_samples),
+                partial(split_samples_by_node_and_worker, rank=rank, world_size=world_size),
+            ])
+        elif len(shards.urls) >= world_size * max(num_workers, 1):
+            # enough shards for every worker of every rank, split shards so each is read once
+            if world_size > 1:
+                datapipe.append(wds.slice(rank, None, world_size))
+            datapipe.extend([
+                wds.split_by_worker,
+                wds.tarfile_to_samples(handler=handler),
+            ])
+        else:
+            # few (or one) eval shards, split samples across ranks, every rank reads the samples of its workers'
+            # shards but only decodes / processes its share
+            datapipe.extend([
+                wds.split_by_worker,
+                wds.tarfile_to_samples(handler=handler),
+            ])
+            if world_size > 1:
+                datapipe.append(wds.slice(rank, None, world_size))
 
     # task specific decode and map pipline (per-sample)
     datapipe.extend(task_pipeline)

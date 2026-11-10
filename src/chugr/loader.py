@@ -1,3 +1,5 @@
+import warnings
+from functools import partial
 from typing import Callable, List, Optional
 
 from chugr.common import DataCfg, DataTaskCfg, DistributedCfg, LoaderBundle, source_to_shard_spec, SourceSpec
@@ -115,8 +117,19 @@ def create_loader_from_config_wds(
     naflex_scheduler = None
     naflex_stage_factory = None
     if is_training and data_cfg.naflex_seq_lens:
-        naflex_scheduler, naflex_stage_factory = _create_naflex_batching(
-            data_cfg, task_cfg, seed=seed, world_size=distributed.world_size, handler=handler)
+        from chugr.naflex import LengthBucketer, NaFlexBatcher
+
+        assert data_cfg.num_samples, 'NaFlex batching requires num_samples (per interval).'
+        naflex_scheduler, processors, image_key = _create_naflex_batching(
+            data_cfg, task_cfg, num_samples=data_cfg.num_samples, seed=seed, world_size=distributed.world_size)
+
+        def naflex_stage_factory(interval):
+            stages = []
+            if data_cfg.length_bucketing:
+                stages.append(LengthBucketer(seed=seed, interval=interval))
+            stages.append(NaFlexBatcher(
+                naflex_scheduler, processors, image_key=image_key, interval=interval, handler=handler))
+            return stages
 
     return create_loader_wds(
         shards=data_cfg.shard_spec,
@@ -138,18 +151,18 @@ def create_loader_from_config_wds(
     )
 
 
-def _create_naflex_batching(data_cfg: DataCfg, task_cfg: DataTaskCfg, seed: int, world_size: int, handler):
-    from chugr.naflex import LengthBucketer, NaFlexBatchScheduler, NaFlexBatcher
+def _create_naflex_batching(data_cfg: DataCfg, task_cfg: DataTaskCfg, num_samples: int, seed: int, world_size: int):
+    """ NaFlex batch schedule (for `num_samples` per interval), per seq_len task processors, and image key. """
+    from chugr.naflex import NaFlexBatchScheduler
     from chugr.task_pipeline import create_task_processor
 
     assert task_cfg.image_process_factory is not None, \
         'NaFlex batching requires task_cfg.image_process_factory (seq_len -> image process fn).'
-    assert data_cfg.num_samples, 'NaFlex batching requires num_samples (per interval).'
     max_tokens = data_cfg.naflex_max_tokens or (data_cfg.batch_size or 1) * max(data_cfg.naflex_seq_lens)
     scheduler = NaFlexBatchScheduler(
         seq_lens=data_cfg.naflex_seq_lens,
         max_tokens_per_batch=max_tokens,
-        num_samples=data_cfg.num_samples,
+        num_samples=num_samples,
         seq_len_probs=data_cfg.naflex_seq_len_probs,
         per_row_text_tokens=data_cfg.naflex_text_tokens,
         batch_divisor=data_cfg.naflex_batch_divisor,
@@ -161,15 +174,7 @@ def _create_naflex_batching(data_cfg: DataCfg, task_cfg: DataTaskCfg, seed: int,
         for s in scheduler.seq_lens
     }
     image_key = getattr(task_cfg, 'image_input_feat').output_name
-
-    def _stage_factory(interval):
-        stages = []
-        if data_cfg.length_bucketing:
-            stages.append(LengthBucketer(seed=seed, interval=interval))
-        stages.append(NaFlexBatcher(scheduler, processors, image_key=image_key, interval=interval, handler=handler))
-        return stages
-
-    return scheduler, _stage_factory
+    return scheduler, processors, image_key
 
 
 def create_loader_from_config_hf(
@@ -218,6 +223,14 @@ def create_loader_from_config_hf(
 
     streaming = 'hfids' in data_cfg.format
 
+    naflex_factory = None
+    if is_training and data_cfg.naflex_seq_lens:
+        # schedule driven NaFlex batching, the schedule is built once the dataset length is known (map-style)
+        if data_cfg.length_bucketing:
+            warnings.warn('length_bucketing is not supported for HF datasets, ignored.')
+        naflex_factory = partial(
+            _create_naflex_batching, data_cfg, task_cfg, seed=seed, world_size=distributed.world_size)
+
     return create_loader_hf(
         source=source,
         split=split,
@@ -231,4 +244,6 @@ def create_loader_from_config_hf(
         persistent_workers=data_cfg.persistent_workers,
         seed=seed,
         distributed=distributed,
+        naflex_factory=naflex_factory,
+        handler=get_error_handler(task_cfg.error_handler),
     )

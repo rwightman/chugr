@@ -94,3 +94,135 @@ def test_repeating_shard_list():
     urls = [next(it)['url'] for _ in range(15)]
     assert sorted(urls[:5]) == sorted(urls[5:10]) == sorted(urls[10:]) == [f's{i}' for i in range(5)]
     assert urls[:5] != urls[5:10]  # each pass reshuffled
+
+
+class _ListDataset:
+    """ map-style dataset of raw samples, optionally failing to load some indices """
+
+    def __init__(self, n, bad=()):
+        self.n, self.bad = n, set(bad)
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, idx):
+        if idx in self.bad:
+            raise RuntimeError('bad sample')
+        return {'i': idx, 'n': 10 + idx % 20}
+
+
+class _MapProcessor:
+    """ picklable (dataloader workers) fake processor """
+
+    def __init__(self, seq_len):
+        self.seq_len = seq_len
+
+    def __call__(self, sample):
+        return _fake_processor(self.seq_len)(sample)
+
+
+def test_shuffled_interval_indices_continue_across_intervals():
+    from chugr.common import shuffled_interval_indices
+    from chugr.hfds.loader import IntervalSampler
+    n, per = 100, 30
+    stream = [i for interval in range(7) for i in shuffled_interval_indices(n, per, interval, seed=5)]
+    # each pass over the dataset is a full permutation, short intervals don't skip samples
+    assert sorted(stream[:100]) == sorted(stream[100:200]) == list(range(100))
+    assert stream[:100] != stream[100:200]
+    # longer than the dataset, and the sampler draws the same rank shares
+    assert sorted(shuffled_interval_indices(n, 250, 0, seed=5)[:200]) == sorted(list(range(100)) * 2)
+    sampler = IntervalSampler(range(n), num_samples=per, rank=1, world_size=2, seed=5, interval=3)
+    assert list(sampler) == shuffled_interval_indices(n, per, 3, seed=5)[1::2]
+
+
+def test_map_dataset_schedule_and_rank_split():
+    from chugr.common import shuffled_interval_indices
+    from chugr.naflex import NaFlexMapDataset
+    n, world = 200, 2
+    sched = NaFlexBatchScheduler(
+        seq_lens=(16, 32), max_tokens_per_batch=128, num_samples=64, batch_divisor=1, seed=7, world_size=world)
+    procs = {16: _fake_processor(16), 32: _fake_processor(32)}
+    seen = []
+    for interval in range(3):
+        per_rank = []
+        for rank in range(world):
+            ds = NaFlexMapDataset(
+                _ListDataset(n), sched, procs, interval=interval, rank=rank, world_size=world, seed=7)
+            batches = list(ds)
+            # rank identical (seq_len, batch_size) schedule
+            assert [(b['image_input']['patches'].shape[1], b['image_input']['patches'].shape[0]) for b in batches] == \
+                sched.interval_schedule(interval)
+            per_rank.append([int(i) for b in batches for i in b['text_input'].flatten()])
+        total = sum(len(r) for r in per_rank)
+        expected = shuffled_interval_indices(n, total, interval, seed=7)
+        assert per_rank == [expected[r::world] for r in range(world)]
+        assert not set(per_rank[0]) & set(per_rank[1])
+        seen += expected
+    assert len(set(seen)) == len(seen) <= n  # no repeats until the dataset is exhausted
+
+
+def test_map_dataset_replaces_failures():
+    from chugr.naflex import NaFlexMapDataset
+    bad = set(range(0, 100, 3))
+    sched = NaFlexBatchScheduler(seq_lens=(16, 32), max_tokens_per_batch=128, num_samples=64, batch_divisor=1)
+    procs = {16: _fake_processor(16), 32: _fake_processor(32)}
+    batches = list(NaFlexMapDataset(_ListDataset(100, bad=bad), sched, procs, handler=lambda ex: True))
+    assert [(b['image_input']['patches'].shape[1], b['image_input']['patches'].shape[0]) for b in batches] == \
+        sched.interval_schedule(0)  # all batches full
+    assert not bad & {int(i) for b in batches for i in b['text_input'].flatten()}
+
+    def reraise(ex):
+        raise ex
+    with pytest.raises(RuntimeError):
+        list(NaFlexMapDataset(_ListDataset(100, bad=bad), sched, procs, handler=reraise))
+
+
+def test_map_dataset_workers_follow_schedule():
+    from torch.utils.data import DataLoader
+    from chugr.naflex import NaFlexMapDataset
+    sched = NaFlexBatchScheduler(seq_lens=(16, 32), max_tokens_per_batch=128, num_samples=70, batch_divisor=1, seed=1)
+    procs = {16: _MapProcessor(16), 32: _MapProcessor(32)}
+    ds = NaFlexMapDataset(_ListDataset(500), sched, procs, interval=2, seed=1)
+    batches = list(DataLoader(ds, batch_size=None, num_workers=3))
+    assert len(batches) == sched.num_batches_for_workers(3)
+    # workers interleave so loader batch i is schedule entry i
+    assert [(b['image_input']['patches'].shape[1], b['image_input']['patches'].shape[0]) for b in batches] == \
+        sched.interval_schedule(2, num_workers=3)
+    ids = [int(i) for b in batches for i in b['text_input'].flatten()]
+    assert len(set(ids)) == len(ids) == sched.num_samples_for_workers(3)
+
+
+def test_safe_dataset_wraps():
+    from chugr.hfds import SafeDataset
+    ds = SafeDataset(_ListDataset(10, bad={8, 9}))
+    assert ds[9]['i'] == 0 and ds[8]['i'] == 0 and ds[3]['i'] == 3
+
+
+class _FakeStream:
+    """ stand-in for a streaming HF dataset (finite pass, set_epoch) """
+
+    def __init__(self, n):
+        self.n, self.epoch = n, 0
+
+    def set_epoch(self, epoch):
+        self.epoch = epoch
+
+    def __iter__(self):
+        return iter([{'i': i, 'n': 10 + i % 20, 'epoch': self.epoch} for i in range(self.n)])
+
+
+def test_wrapped_iterable_repeat_quota_and_stages():
+    from chugr.hfds.wrappers import WrappedIterableDataset
+    ds = WrappedIterableDataset(_FakeStream(5), interval_count=3, num_samples=12, repeat=True)
+    out = list(ds)
+    assert [s['i'] for s in out] == [0, 1, 2, 3, 4] * 2 + [0, 1]  # wraps to fill the quota
+    assert {s['epoch'] for s in out} == {3}
+    assert len(list(WrappedIterableDataset(_FakeStream(5)))) == 5  # single pass by default
+    with pytest.raises(RuntimeError):
+        list(WrappedIterableDataset(_FakeStream(0), num_samples=4, repeat=True))
+    # NaFlex batching of the repeating stream follows the schedule
+    sched = NaFlexBatchScheduler(seq_lens=(16, 32), max_tokens_per_batch=128, num_samples=64, batch_divisor=1)
+    batcher = NaFlexBatcher(sched, {16: _fake_processor(16), 32: _fake_processor(32)})
+    batches = list(WrappedIterableDataset(_FakeStream(7), repeat=True, stages=[batcher]))
+    assert [(b['image_input']['patches'].shape[1], b['image_input']['patches'].shape[0]) for b in batches] == \
+        sched.interval_schedule(0)

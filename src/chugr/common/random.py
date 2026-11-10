@@ -5,6 +5,18 @@ import numpy as np
 from .types import SharedCount
 
 
+_RANK_SEED_STRIDE = 1000003
+
+
+def rank_seed(seed: int, rank: int = 0) -> int:
+    """ Seed for per rank randomness (process RNGs, dataloader worker seeds).
+
+    Ranks are spaced by a large stride (vs seed + rank) so runs w/ nearby seeds don't share random streams
+    (seed 42 rank 1 == seed 43 rank 0), rank 0 keeps `seed` so single process runs are unchanged.
+    """
+    return seed + _RANK_SEED_STRIDE * rank
+
+
 def seed_worker(worker_id):
     import torch
     worker_seed = torch.initial_seed()
@@ -41,3 +53,24 @@ def get_pytorch_worker_seed(increment=0, initial_seed=None):
             seed += increment_value
 
     return seed
+
+
+def shuffled_interval_indices(dataset_len: int, num_indices: int, interval: int = 0, seed: int = 0):
+    """ Shuffled dataset indices for one interval of a map-style dataset (all ranks, split w/ [rank::world_size]).
+
+    Each pass over the dataset is a fresh permutation (seed + pass), intervals consume the permutations
+    sequentially (interval i starts where i - 1 ended), so intervals shorter than the dataset still cycle through
+    every sample before repeating. Identical across ranks / workers for the same args.
+    """
+    import torch
+    assert dataset_len > 0, 'dataset is empty'
+    epoch, offset = divmod(interval * num_indices, dataset_len)
+    indices = []
+    while len(indices) < num_indices:
+        g = torch.Generator()
+        g.manual_seed(seed + epoch)
+        perm = torch.randperm(dataset_len, generator=g).tolist()
+        indices.extend(perm[offset:])
+        offset = 0
+        epoch += 1
+    return indices[:num_indices]

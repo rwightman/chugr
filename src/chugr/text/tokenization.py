@@ -1,7 +1,11 @@
+import logging
 from functools import partial
-from typing import Callable, Optional, Union
+from typing import Callable, List, Optional, Union
 
 import torch
+
+_logger = logging.getLogger(__name__)
+_num_prompts_truncated = 0
 
 
 def prompt_end_pos(tokens: torch.Tensor, prompt_end_token_id: int, empty_default: int = 0) -> int:
@@ -62,6 +66,87 @@ def tokenize(
     return output
 
 
+def truncate_prompt(
+        token_ids: List[int],
+        max_length: int,
+        prompt_end_token_id: int,
+        special_token_ids=(),
+) -> List[int]:
+    """ Shorten the prompt of an over-long `prompt + target` token sequence so the prompt end token and the target
+    still fit in `max_length`.
+
+    Tokens are removed from the end of the prompt body, the prompt's leading special tokens (task start, question
+    prefix) and trailing special tokens (question suffix, prompt end) are kept. Returns the ids unchanged if they
+    fit or there is no prompt end token, and may still return more than `max_length` tokens if the target alone
+    is too long (the caller truncates the tail).
+    """
+    over = len(token_ids) - max_length
+    ends = [i for i, t in enumerate(token_ids) if t == prompt_end_token_id]
+    if over <= 0 or not ends:
+        return token_ids
+    special = set(special_token_ids) | {prompt_end_token_id}
+    body_end = ends[-1]
+    while body_end > 0 and token_ids[body_end - 1] in special:
+        body_end -= 1
+    body_start = 0
+    while body_start < body_end and token_ids[body_start] in special:
+        body_start += 1
+    cut = min(over, body_end - body_start)
+    if cut <= 0:
+        return token_ids
+    return token_ids[:body_end - cut] + token_ids[body_end:]
+
+
+def special_token_ids(tokenizer) -> set:
+    """ Special & added token ids, for HF tokenizers and wrappers w/ a subset of the interface. """
+    ids = set(getattr(tokenizer, 'all_special_ids', None) or ())
+    get_added_vocab = getattr(tokenizer, 'get_added_vocab', None)
+    if get_added_vocab is not None:
+        ids |= set(get_added_vocab().values())
+    return ids
+
+
+def _tokenize_keep_prompt_end(
+        text: str,
+        text_input_ids: torch.Tensor,
+        tokenizer: Callable,
+        max_length: int,
+        prompt_end_token: Union[str, int],
+) -> torch.Tensor:
+    """ Re-tokenize a (possibly) truncated `text_input_ids` w/ the prompt shortened instead of the tail cut off. """
+    global _num_prompts_truncated
+    pad_token_id = tokenizer.pad_token_id
+    if bool((text_input_ids == pad_token_id).any()):
+        return text_input_ids  # padded, nothing was truncated
+    prompt_end_token_id = prompt_end_token
+    if isinstance(prompt_end_token, str):
+        prompt_end_token_id = tokenizer.convert_tokens_to_ids(prompt_end_token)
+    special = special_token_ids(tokenizer)
+    ends = torch.nonzero(text_input_ids == prompt_end_token_id)
+    if len(ends) and all(int(t) in special for t in text_input_ids[:int(ends[0])]):
+        # the prompt end survived truncation w/ only special tokens before it (e.g. a task start token as the
+        # prompt end), no prompt body to shorten, skip re-tokenizing
+        return text_input_ids
+    full_ids = tokenizer(text, add_special_tokens=False).input_ids
+    if len(full_ids) <= max_length:
+        return text_input_ids
+    ids = truncate_prompt(full_ids, max_length, prompt_end_token_id, special)
+    if len(ids) == len(full_ids):
+        return text_input_ids  # no prompt (body) to shorten
+    _num_prompts_truncated += 1
+    n = _num_prompts_truncated
+    if n == 10 ** (len(str(n)) - 1):  # log the 1st, 10th, 100th, ... (per process / dataloader worker)
+        _logger.warning(
+            f'Prompt shortened by {len(full_ids) - len(ids)} tokens to fit the target in max_length={max_length} '
+            f'({n} prompts shortened so far in this process).')
+    ids = ids[:max_length]  # target alone too long, the tail is still cut
+    num_pad = max_length - len(ids)
+    if num_pad:
+        pad = [pad_token_id] * num_pad
+        ids = pad + ids if getattr(tokenizer, 'padding_side', 'right') == 'left' else ids + pad
+    return torch.tensor(ids, dtype=text_input_ids.dtype)
+
+
 def prepare_text_input(
         text_input,
         tokenizer: Callable,
@@ -85,6 +170,9 @@ def prepare_text_input(
         text_input += tokenizer.eos_token
 
     text_input_ids = tokenize(text_input, tokenizer=tokenizer, max_length=max_length)
+    if prompt_end_token is not None:
+        # an over-long prompt (question) is shortened so the prompt end token & target (answer) aren't truncated away
+        text_input_ids = _tokenize_keep_prompt_end(text_input, text_input_ids, tokenizer, max_length, prompt_end_token)
 
     if include_target:
         text_target_ids = text_input_to_target(text_input_ids, tokenizer, prompt_end_token, ignore_id)

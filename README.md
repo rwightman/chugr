@@ -38,12 +38,25 @@ This library is still a WIP, consider this an alpha release (pre announcement). 
   loss scaling.
 * Webdataset shard lists repeat (reshuffled per pass) instead of requiring `resampled`, so fixed sample count
   intervals and NaFlex batching work w/o sampling shards w/ replacement
+* NaFlex batching for HF datasets. Map-style (`format hfds`, `NaFlexMapDataset` adapted from OpenCLIP's
+  `NaFlexMapDatasetWrapper`): the same schedule over rank sharded shuffled indices that continue through the dataset
+  across intervals, failed samples are replaced. Streaming (`hfids`): `NaFlexBatcher` over the repeating stream.
+* Streaming HF datasets yield a fixed number of train batches per worker (the stream wraps around), so every rank
+  sees the same number of batches per interval, as the webdataset loader. `num_workers` is limited to the number of
+  data shards (files) per rank.
+* Ranks are split w/ the explicit `DistributedCfg` rank / world size (no reliance on `RANK` / `WORLD_SIZE` env vars
+  in dataloader workers), per rank seeds are spaced by a large stride (`chugr.common.rank_seed`) so runs w/ nearby
+  seeds don't share streams.
+* Webdataset eval: `num_samples` below the dataset size caps the eval set to exactly the first `num_samples` samples
+  for any number of ranks / workers (every worker reads that head of the stream, keep it small). W/o a cap all
+  samples are used, split by shard if there are at least `ranks * workers` shards, otherwise by sample.
+* Text preprocessing w/ a `prompt_end_token`: an over-long prompt (question) is shortened so the prompt end token
+  and target (answer) still fit in `max_length`.
 
 ### Mediumish
 * Option to output bbox annotations for lines (or word + word output) for tasks that leverage layout
 * Unified preprocessor functions for combined image + text tokenization (img+text token interleaving, etc.)
 * Image token (patch) packing ala NaViT. Online bin packing based algorithms integrated with image preprocessing and pipeline (NaFlex style padded batching per sequence length bucket is supported now).
-* NaFlex batching for the HF datasets loader
 
 ### Longish 
 * Increase range of task pipelines for other tasks, modelling needs
@@ -123,7 +136,8 @@ Task specific pipelines that handle the data <--> model input interface are inse
 #### `naflex`
 
 NaFlex (variable sequence length) batching helpers: `NaFlexBatchScheduler` (rank-identical seq len / batch size
-schedule from a token budget), `NaFlexBatcher` (per seq len processors + batching), `LengthBucketer`.
+schedule from a token budget), `NaFlexBatcher` (per seq len processors + batching of a sample stream),
+`NaFlexMapDataset` (the same over a map-style dataset), `LengthBucketer`.
 
 #### `chugr.loader`
 

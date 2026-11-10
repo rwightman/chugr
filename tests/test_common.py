@@ -86,3 +86,39 @@ def test_text_input_to_target_masks_prompt():
     ids = torch.tensor([10, 11, 12, 99, 13, 14, 2, 1, 1])  # 99 == prompt end, 1 == pad
     target = text_input_to_target(ids, prompt_end_token=99, pad_token_id=1)
     assert target.tolist() == [-100, -100, -100, -100, 13, 14, 2, -100, -100]
+
+
+def test_truncate_prompt_keeps_prompt_end_and_target():
+    from chugr.text.tokenization import truncate_prompt
+    # 50 == task start, 51 / 52 == question prefix / suffix, 99 == prompt end, 53 == answer suffix, 2 == eos
+    special = {50, 51, 52, 53, 2}
+    ids = [50, 51] + list(range(100, 120)) + [52, 99, 13, 14, 53, 2]
+    out = truncate_prompt(ids, 16, 99, special)
+    assert len(out) == 16
+    assert out[:2] == [50, 51] and out[-6:] == [52, 99, 13, 14, 53, 2]  # prefix, suffix, answer kept
+    assert out[2:-6] == list(range(100, 108))  # question cut from its end
+    assert truncate_prompt(ids, 64, 99, special) == ids  # fits
+    assert truncate_prompt(ids, 16, 98, special) == ids  # no prompt end
+    # target alone too long, the whole question body goes, the caller cuts the tail
+    assert truncate_prompt(ids, 6, 99, special) == [50, 51, 52, 99, 13, 14, 53, 2]
+
+
+def test_prepare_text_input_long_prompt():
+    import pytest
+    transformers = pytest.importorskip('transformers')
+    from chugr.text import create_text_preprocessor
+    try:
+        tokenizer = transformers.AutoTokenizer.from_pretrained('facebook/bart-base')
+    except Exception:
+        pytest.skip('tokenizer not available')
+    tokenizer.add_special_tokens({'additional_special_tokens': ['<s_docvqa>', '<s_question>', '</s_question>', '<s_answer>', '</s_answer>']})
+    fn = create_text_preprocessor(tokenizer, max_length=32, task_start_token='<s_docvqa>', prompt_end_token='<s_answer>')
+    text = '<s_question>' + 'what is the total amount due on this invoice ' * 8 + '?</s_question><s_answer>42 dollars</s_answer>'
+    out = fn(text)
+    ids, target = out['text_input'], out['text_target']
+    assert ids.shape == (32,) and ids[-1] == tokenizer.eos_token_id
+    end = (ids == tokenizer.convert_tokens_to_ids('<s_answer>')).nonzero().item()
+    assert (target[:end + 1] == -100).all() and (target[end + 1:] == ids[end + 1:]).all()
+    assert '42 dollars' in tokenizer.decode(ids[end + 1:], skip_special_tokens=True)
+    short = fn('<s_question>total?</s_question><s_answer>42</s_answer>')
+    assert (short['text_input'] == tokenizer.pad_token_id).any()  # unchanged, padded path

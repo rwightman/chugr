@@ -33,6 +33,10 @@ class LoaderBundle:
     def set_interval(self, interval):
         if self.shared_interval is not None:
             self.shared_interval.set_value(interval)
+        dataset = getattr(self.loader, 'dataset', None)
+        if hasattr(dataset, 'set_interval_count'):
+            # main process side interval state of the dataset (e.g. the HF streaming dataset epoch)
+            dataset.set_interval_count(interval)
         if self.sampler is not None and hasattr(self.sampler, 'set_epoch'):
             self.sampler.set_epoch(interval)
 

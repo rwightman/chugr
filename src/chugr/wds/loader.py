@@ -6,7 +6,7 @@ from typing import Callable, List, Optional, Union
 import torch.utils.data
 import webdataset as wds
 
-from chugr.common import DistributedCfg, LoaderBundle, SharedCount, ShardSpec, seed_worker
+from chugr.common import DistributedCfg, LoaderBundle, SharedCount, ShardSpec, rank_seed, seed_worker
 from .helpers import expand_urls
 from .pipeline import build_data_pipeline
 
@@ -75,6 +75,10 @@ def create_loader_wds(
         )
 
     num_shards = len(shards.urls)
+    # eval, an explicit num_samples below the (known) dataset size caps the eval set, otherwise all samples are used
+    max_samples = None
+    if not is_training and num_samples and not (shards.sizes and num_samples >= sum(shards.sizes)):
+        max_samples = num_samples
     if num_samples is None:
         if shards.sizes:
             num_samples = sum(shards.sizes)
@@ -111,9 +115,9 @@ def create_loader_wds(
         num_samples = num_batches * global_batch_size
     else:
         # Eval / inference will exhaust the iterator if the size is not specified.
-        # Samples are split across ranks (rank i takes every world_size-th sample), the counts per rank can
-        # differ by one sample, and ranks may see different numbers of (partial) batches. Eval loops must not
-        # run collectives per batch.
+        # Samples (or shards, w/ enough of them and no sample cap) are split across ranks, the counts per rank
+        # differ, and ranks may see different numbers of (partial) batches, num_batches is an estimate. Eval
+        # loops must not run collectives per batch.
         num_samples = num_samples or 0
         if batch_size:
             num_batches = math.ceil(math.ceil(num_samples / distributed.world_size) / batch_size)
@@ -133,7 +137,7 @@ def create_loader_wds(
 
     # DataLoader worker seeds (resampled shards, sample shuffle, worker RNGs) must differ across ranks, the shard
     # list shuffle (w/o resampling) uses the shared `seed` so the node / worker split stays consistent
-    worker_seed = seed + distributed.global_rank
+    worker_seed = rank_seed(seed, distributed.global_rank)
     datapipe = build_data_pipeline(
         shards=shards,
         task_pipeline=task_pipeline,
@@ -148,11 +152,12 @@ def create_loader_wds(
         sample_shuffle_size=sample_shuffle_size,
         handler=handler,
         collate_fn=collate_fn,
-        max_samples=None if is_training else num_samples,
+        max_samples=max_samples,
         repeat_shards=is_training and naflex_scheduler is not None and not resampled,
         worker_seed=worker_seed,
         rank=distributed.global_rank,
         world_size=distributed.world_size,
+        num_workers=num_workers,
     )
 
     dl_generator = torch.Generator()
