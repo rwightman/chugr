@@ -33,8 +33,12 @@ def text_input_to_target(
             prompt_end_token_id = prompt_end_token  # already an int
 
         # model doesn't need to predict prompt (for VQA)
-        end_pos = prompt_end_pos(target, prompt_end_token_id)
-        target[:end_pos + 1] = ignore_id
+        end_pos = prompt_end_pos(target, prompt_end_token_id, empty_default=-1)
+        if end_pos < 0:
+            # prompt end truncated away (prompt longer than max_length), nothing left to predict
+            target[:] = ignore_id
+        else:
+            target[:end_pos + 1] = ignore_id
 
     return target
 

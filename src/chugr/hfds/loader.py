@@ -1,3 +1,4 @@
+import math
 from copy import deepcopy
 from typing import Callable, List, Optional
 
@@ -183,10 +184,16 @@ def create_loader_hf(
             persistent_workers=persistent_workers,
         )
 
+        # approximate, split_dataset_by_node gives each rank ~num_samples / world_size samples
         batch_size = batch_size or 1
+        num_batches = 0
+        if num_samples:
+            samples_per_rank = num_samples / distributed.world_size
+            num_batches = math.floor(samples_per_rank / batch_size) if is_training else math.ceil(
+                samples_per_rank / batch_size)
         loader = LoaderBundle(
             loader=base_loader,
-            num_batches=num_workers // batch_size,
+            num_batches=num_batches,
             num_samples=num_samples,
             shared_interval=interval_count,
         )

@@ -111,13 +111,12 @@ def create_loader_wds(
         num_samples = num_batches * global_batch_size
     else:
         # Eval / inference will exhaust the iterator if the size is not specified.
-        # Eval currently supported for 1 train process only (primary)
-        # FIXME support distributed eval
-        #  https://pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html#torch.nn.parallel.DistributedDataParallel.join
+        # Samples are split across ranks (rank i takes every world_size-th sample), the counts per rank can
+        # differ by one sample, and ranks may see different numbers of (partial) batches. Eval loops must not
+        # run collectives per batch.
         num_samples = num_samples or 0
-        # last batches are partial, eval is done on a single (primary) process
         if batch_size:
-            num_batches = math.ceil(num_samples / batch_size)
+            num_batches = math.ceil(math.ceil(num_samples / distributed.world_size) / batch_size)
         else:
             num_batches = 0
 
@@ -132,6 +131,9 @@ def create_loader_wds(
     if is_training and naflex_scheduler is not None:
         task_pipeline = naflex_stage_factory(shared_interval_count)
 
+    # DataLoader worker seeds (resampled shards, sample shuffle, worker RNGs) must differ across ranks, the shard
+    # list shuffle (w/o resampling) uses the shared `seed` so the node / worker split stays consistent
+    worker_seed = seed + distributed.global_rank
     datapipe = build_data_pipeline(
         shards=shards,
         task_pipeline=task_pipeline,
@@ -148,10 +150,13 @@ def create_loader_wds(
         collate_fn=collate_fn,
         max_samples=None if is_training else num_samples,
         repeat_shards=is_training and naflex_scheduler is not None and not resampled,
+        worker_seed=worker_seed,
+        rank=distributed.global_rank,
+        world_size=distributed.world_size,
     )
 
     dl_generator = torch.Generator()
-    dl_generator.manual_seed(seed)
+    dl_generator.manual_seed(worker_seed)
 
     dataloader = wds.WebLoader(
         datapipe,

@@ -27,6 +27,9 @@ def build_data_pipeline(
         handler=wds.reraise_exception,
         max_samples: Optional[int] = None,
         repeat_shards: bool = False,
+        worker_seed: Optional[int] = None,
+        rank: int = 0,
+        world_size: int = 1,
 ):
     """
 
@@ -45,10 +48,17 @@ def build_data_pipeline(
         collate_fn:
         batched_task_pipeline: An optional task-specific pipeline for processing batched samples
         handler: Exception handler
+        max_samples: Eval, limit the number of samples (before splitting across ranks)
+        repeat_shards: Train w/o resampling, cycle through the shard list (reshuffled each pass)
+        worker_seed: Seed for per worker randomness (shard resampling, sample shuffle) when the seed can't be
+            recovered from DataLoader workers (num_workers=0), must differ across ranks. Defaults to `seed`.
+        rank: Eval, rank of this process, samples are split across ranks
+        world_size: Eval, number of ranks
 
     Returns:
 
     """
+    worker_seed = seed if worker_seed is None else worker_seed
     if not isinstance(task_pipeline, (list, tuple)):
         task_pipeline = [task_pipeline]
     assert len(task_pipeline)
@@ -59,7 +69,7 @@ def build_data_pipeline(
             weights=shards.weights,
             deterministic=True,
             interval=shared_interval_count,
-            seed=seed,
+            seed=worker_seed,
         )]
     else:
         assert shards.weights is None, \
@@ -89,7 +99,7 @@ def build_data_pipeline(
             detshuffle_v2(
                 bufsize=sample_shuffle_size,
                 initial=sample_shuffle_initial,
-                seed=seed,
+                seed=worker_seed,
                 interval=shared_interval_count,
                 unique_worker=True,
             )
@@ -104,13 +114,17 @@ def build_data_pipeline(
             # at this point, we have an iterator over the shards assigned to each worker
             wds.tarfile_to_samples(handler=handler),
         ])
+        if max_samples:
+            # limit eval samples (per worker, exact w/ num_workers <= 1), before the rank split so the eval set
+            # doesn't change w/ world size
+            datapipe.append(wds.slice(max_samples))
+        if world_size > 1:
+            # split samples (not shards) across ranks, so few (or one) eval shards still split evenly, every
+            # rank reads the same sample stream but only decodes / processes its share
+            datapipe.append(wds.slice(rank, None, world_size))
 
     # task specific decode and map pipline (per-sample)
     datapipe.extend(task_pipeline)
-
-    if not is_training and max_samples:
-        # limit eval samples (per worker, exact w/ num_workers <= 1)
-        datapipe.append(wds.slice(max_samples))
 
     # collation, tensor output disabled with batch_size == 0 or None
     if batch_size:
