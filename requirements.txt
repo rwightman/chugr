@@ -1,6 +1,10 @@
 torch
+torchvision
 timm
 webdataset
+braceexpand
 datasets
+numpy
+pillow
+pyyaml
 pypdfium2
-simple_parsing

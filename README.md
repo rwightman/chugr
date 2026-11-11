@@ -1,31 +1,41 @@
 # Chugging Data (`chugr`)
 
-Continuation of the original `chug` library (huggingface/chug), renamed and revived.
+Data pipelines for training multi-modal models on documents and image + text pairs, built on
+[`webdataset`](https://github.com/webdataset/webdataset) and Hugging Face [`datasets`](https://github.com/huggingface/datasets).
 
-A library to help w/ efficient training for multi-modal data. Initially focused on image & document + text tasks.
+* `webdataset` tar shards for scalable (streamed, sharded) pretraining, Hugging Face `datasets` (map-style or streaming)
+  for exploration, validation and fine-tuning, behind one config driven `create_loader()`
+* On the fly PDF decoding and rendering, so large collections of native `.pdf` files can be streamed w/o pre-rendering
+  pages to `.png` / `.tiff`. The PDF decoder works at the webdataset level and can be plugged into other pipelines
+* Document image transforms (incl. an `albumentations` port of the `nougat` augmentations) and NaFlex (native aspect,
+  variable resolution) patch sequence transforms
+* NaFlex batching: per batch sequence lengths sized to a token budget, w/ a rank-identical schedule. This padded,
+  per sample scheme is the focus for variable aspect / size images, not NaViT style multi-image sequence packing
+* Task pipelines for document reading (OCR targets), document VQA and image-text, w/ tokenization and prompt handling
+* Interval based training: fixed sample counts per interval, the same number of batches on every rank, shard lists that
+  repeat (reshuffled per pass) or are resampled, distributed eval w/o padded or repeated samples
 
-`chugr` currently leverages `webdataset` and Hugging Face `datasets`.
+`chugr` is the continuation of the original `chug` library (huggingface/chug), renamed and revived. It provides the
+data pipelines for [`pixr`](https://github.com/rwightman/pixr).
 
-`webdataset` tar files and dataset pipelines are preferred for scalable pretraining. 
+## Installation
 
-Hugging Face `datasets` are supported and work great for exploration, validation, and fine-tune use cases.
+```bash
+pip install --pre chugr
+# optional extras: albumentations based transforms (doc_nougat), HF tokenizers by name + synthetic text font checks
+pip install --pre "chugr[alb,text]"
+```
 
-`chugr` provides on the fly PDF decoding and rendering via either pypdfium2 (https://github.com/pypdfium2-team/pypdfium2) as a default, or fitz/pymupdf (https://github.com/pymupdf/PyMuPDF) if your use case is okay with their AGPL-3.0 license. `fitz` support must be manually enabled. The pdf handling is implemented at the webdataset level, so you can plug it in to other webdataset pipelines. This enables large scale sharded streaming of native .pdf files without needing to pre-render to .png/.tiff, etc.
+PDF rendering uses [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) by default.
+[fitz / PyMuPDF](https://github.com/pymupdf/PyMuPDF) can be used instead if your use case is okay with its AGPL-3.0
+license, it must be installed separately and enabled w/ `CHUGR_USE_AGPL_PYMUPDF=1`.
 
 ## Status
 
-This library is still a WIP, consider this an alpha release (pre announcement). Major features should be working, the library has been tested with several PDF datasets we will shortly make public. However, do expect there will still be breaking changes, lots of improvements, etc.
+Alpha. Major features work and have been used for document reading pretraining and DocVQA fine-tuning, expect breaking
+changes. `pip install --pre chugr` installs the current dev version.
 
-`pip install --pre chugr` will install the current dev version.
-
-### TODOs
-
-### Nearish
-* Cleanup and refinement, codebase will change
-* Documentation & unit-tests
-* Support reading of info .json/.yaml files for automatic shard info resolution for webdatasets (like timm)
-
-### Recent (revive branch)
+### Changes since `chug`
 * `simple_parsing` dependency replaced by a minimal `Serializable` mixin and nested dataclass CLI parser (`chugr.common.parse_args`)
 * NaFlex (native aspect, variable resolution) document transforms (`doc_naflex`) producing patch sequences + coords, padded by `chugr.common.collate`
 * Fixes for `doc_basic` / `doc_better` train transforms, albumentations 2.x support for `doc_nougat`
@@ -43,20 +53,28 @@ This library is still a WIP, consider this an alpha release (pre announcement). 
   across intervals, failed samples are replaced. Streaming (`hfids`): `NaFlexBatcher` over the repeating stream.
 * Streaming HF datasets yield a fixed number of train batches per worker (the stream wraps around), so every rank
   sees the same number of batches per interval, as the webdataset loader. `num_workers` is limited to the number of
-  data shards (files) per rank.
+  data shards (files) per rank. The dataset epoch (shard / shuffle seed) is set from the main process only.
 * Ranks are split w/ the explicit `DistributedCfg` rank / world size (no reliance on `RANK` / `WORLD_SIZE` env vars
   in dataloader workers), per rank seeds are spaced by a large stride (`chugr.common.rank_seed`) so runs w/ nearby
   seeds don't share streams.
+* Eval splits are exact: map-style HF datasets are split across ranks w/o padding or repeated samples (uneven per rank
+  counts), uncapped streaming eval reads every sample once.
 * Webdataset eval: `num_samples` below the dataset size caps the eval set to exactly the first `num_samples` samples
   for any number of ranks / workers (every worker reads that head of the stream, keep it small). W/o a cap all
   samples are used, split by shard if there are at least `ranks * workers` shards, otherwise by sample.
 * Text preprocessing w/ a `prompt_end_token`: an over-long prompt (question) is shortened so the prompt end token
   and target (answer) still fit in `max_length`.
 
+## Roadmap
+
+### Nearish
+* Cleanup and refinement, codebase will change
+* Documentation & unit-tests
+* Support reading of info .json/.yaml files for automatic shard info resolution for webdatasets (like timm)
+
 ### Mediumish
 * Option to output bbox annotations for lines (or word + word output) for tasks that leverage layout
 * Unified preprocessor functions for combined image + text tokenization (img+text token interleaving, etc.)
-* Image token (patch) packing ala NaViT. Online bin packing based algorithms integrated with image preprocessing and pipeline (NaFlex style padded batching per sequence length bucket is supported now).
 
 ### Longish 
 * Increase range of task pipelines for other tasks, modelling needs
@@ -146,10 +164,6 @@ This lone top-level file includes the main factory methods for creating loaders 
 #### `app`
 
 Most applications using `chugr` will exist outside of the lib in training libraries, etc. Some builtin utility / exploration apps will be included here.
-
-## Concepts
-
-WIP
 
 ## Datasets
 
@@ -267,9 +281,26 @@ sample = next(ii)
 ```
 
 
+### NaFlex (variable resolution) document input
+
+```python
+import chugr
+from PIL import Image
+
+# pages keep their aspect ratio, resized to fit a patch budget (max_seq_len patches of patch_size x patch_size)
+img_cfg = chugr.ImageInputCfg(transform_type='doc_naflex', patch_size=16, max_seq_len=1024)
+img_fn = chugr.create_image_preprocessor(input_cfg=img_cfg, is_training=True)
+out = img_fn(Image.new('L', (850, 1100), 255))
+# {'patches': [N, 256], 'patch_coord': [N, 2] (y, x), 'patch_valid': [N] bool}, N <= max_seq_len
+```
+
+For batches w/ a sequence length (patch budget) drawn per batch and the batch size set by a token budget, set
+`naflex_seq_lens`, `naflex_seq_len_probs` and `naflex_max_tokens` in `DataCfg` (webdataset, map-style or streaming
+HF datasets).
+
 ### Image + Text
 
-### Training
+#### Training
 
 ```python
 import chugr
@@ -303,7 +334,6 @@ sample = next(ii)
 #### Training, Fine-tuning
 ```python
 import chugr
-from chugr.task_pipeline import create_task_pipeline
 img_cfg = chugr.ImageInputCfg(size=(1024, 768), transform_type='doc_basic')
 img_fn = chugr.create_image_preprocessor(img_cfg, is_training=True)
 txt_fn = chugr.create_text_preprocessor(
@@ -335,7 +365,6 @@ sample = next(ii)
 
 ```python
 import chugr
-from chugr.task_pipeline import create_task_pipeline
 task_cfg = chugr.DataTaskDocVqaCfg(
     question_prefix='Question: ',
     question_suffix='',
@@ -359,8 +388,12 @@ sample = next(ii)
 
 ## Acknowledgement
 
-`chugr` evolve from the `webdataset` datapipeline used successfully in the [OpenCLIP](https://github.com/mlfoundations/open_clip) project. Thanks to all the contributors in that project. Future work will likely involve closing the loop and leveraging `chugr` in OpenCLIP for increased capability.
+`chugr` evolved from the `webdataset` datapipeline used successfully in the [OpenCLIP](https://github.com/mlfoundations/open_clip) project. Thanks to all the contributors in that project. Future work will likely involve closing the loop and leveraging `chugr` in OpenCLIP for increased capability.
 
 The image/document augmentations in `chugr` rely on a number of external influences. Our document oriented `doc_better` torchvision augmentations are influenced by `nougat`, and the `doc_nougat` is a direct adaptation of the [`albumentations`](https://albumentations.ai/) + `cv2` document pipeline in [`nougat`](https://github.com/facebookresearch/nougat). Several image augmentations leverage existing work in the `timm` library.
 
 Also, big thanks to the maintainers of [`webdataset`](https://github.com/webdataset/webdataset) and Hugging Face [`datasets`](https://github.com/huggingface/datasets).
+
+## License
+
+Apache 2.0, see [LICENSE](LICENSE). The optional PyMuPDF backend is AGPL-3.0 licensed (see above).
