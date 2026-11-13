@@ -86,6 +86,49 @@ class ImageInputCfg(Serializable):
 
 
 @dataclass
+class DocAugCfg(Serializable):
+    """ Train augmentation for the torchvision based document transforms ('doc_better', 'doc_naflex').
+
+    Each op is applied independently w/ its own probability, a probability of 0 disables the op and prob_scale
+    scales all of them (0 == no augmentation). scale / ratio apply to 'doc_better' (fixed size), random_seq_len
+    to 'doc_naflex' (patch budget).
+    """
+    prob_scale: float = 1.0  # multiplier for every op probability below
+
+    # random resize scale / aspect ratio ('doc_better')
+    scale_prob: float = 0.05
+    scale_range: Tuple[float, float] = (0.85, 1.04)
+    ratio_prob: float = 0.05
+    ratio_range: Tuple[float, float] = (0.9, 1.11)
+
+    # random reduced patch budget, as a fraction of max_seq_len ('doc_naflex')
+    random_seq_len_prob: float = 0.
+    random_seq_len_range: Tuple[float, float] = (0.6, 1.0)
+
+    bitmap_prob: float = 0.05
+    erosion_dilation_prob: float = 0.02
+    shear_prob: float = 0.05
+    shear_range_x: Tuple[float, float] = (0., 3.)  # degrees
+    shear_range_y: Tuple[float, float] = (-3., 0.)  # degrees
+    shift_scale_rotate_prob: float = 0.03
+    shift_range_x: float = 0.04  # fraction of width
+    shift_range_y: float = 0.03  # fraction of height
+    rotate_range: float = 3.  # degrees
+    elastic_prob: float = 0.04
+    elastic_alpha: float = 50.
+    elastic_sigma: float = 12.
+    brightness_contrast_prob: float = 0.04
+    brightness_range: float = 0.1
+    contrast_range: float = 0.1
+    gaussian_blur_prob: float = 0.03
+    gaussian_blur_kernel: int = 3
+
+    def prob(self, name: str) -> float:
+        """ Op probability w/ prob_scale applied. """
+        return min(1., getattr(self, name) * self.prob_scale)
+
+
+@dataclass
 class ImageAugCfg(Serializable):
     """
     A simple flat config struct for overriding common augmentation defaults.

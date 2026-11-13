@@ -1,6 +1,7 @@
 from .common import (
     ImageInputCfg,
     ImageAugCfg,
+    DocAugCfg,
     LoaderBundle,
     ImageFeatureInfo,
     FeatureInfo,

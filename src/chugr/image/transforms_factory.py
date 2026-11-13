@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional, Union
 
-from chugr.common import ImageInputCfg, ImageAugCfg
+from chugr.common import ImageInputCfg, ImageAugCfg, DocAugCfg
 from .build_transforms_doc import build_transforms_doc_better, build_transforms_doc_nougat, build_transforms_doc_basic, \
     build_transforms_doc_naflex
 from .build_transforms_image import build_transforms_image_timm, build_transforms_image_basic
@@ -20,7 +20,7 @@ def build_image_transforms(
         do_normalize=True,
         do_convert=False,
         composed=True,
-        aug_cfg: Optional[Union[Dict[str, Any], ImageAugCfg]] = None,
+        aug_cfg: Optional[Union[Dict[str, Any], ImageAugCfg, DocAugCfg]] = None,  # DocAugCfg for doc_better / doc_naflex
 ):
     common_args = dict(
         input_cfg=input_cfg,
@@ -43,7 +43,7 @@ def create_image_preprocessor(
         is_training=True,
         do_normalize=True,
         do_convert=False,
-        aug_cfg: Optional[Union[Dict[str, Any], ImageAugCfg]] = None,
+        aug_cfg: Optional[Union[Dict[str, Any], ImageAugCfg, DocAugCfg]] = None,  # DocAugCfg for doc_better / doc_naflex
 ):
     transforms = build_image_transforms(
         input_cfg=input_cfg,
