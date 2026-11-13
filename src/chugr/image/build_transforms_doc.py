@@ -1,17 +1,22 @@
-import random
 from typing import Any, Dict, Optional, Union
 
-import torchvision.transforms.functional as F
-from torchvision import transforms
+from PIL import Image
+from torchvision import tv_tensors
+from torchvision.transforms import InterpolationMode, v2
 
 from chugr.common import ImageInputCfg, ImageAugCfg, DocAugCfg
 
-from .transforms_torch import AlignLongAxis, Bitmap, Erosion, Dilation, CropMargin
+from .transforms_torch import AlignLongAxis, Bitmap, Erosion, Dilation, CropMargin, ResizeKeepRatio, \
+    CenterCropOrPad, RandomCropOrPad, ResizeToSeqLen, Patchify, ToPureImage, to_tensor_ops
 
-# NOTE, chugr currently depends on some time aug impl, this should be flipped if timm ends up
+# NOTE, chugr currently depends on some timm aug impl, this should be flipped if timm ends up
 # leveraging chugr data pipelines.
-from timm.data import str_to_interp_mode, ResizeKeepRatio, CenterCropOrPad, RandomCropOrPad
-from timm.data.naflex_transforms import Patchify, get_image_size_for_seq
+from timm.data import str_to_interp_mode
+
+
+def _fill_by_type(fill):
+    """ v2 fill arg, the image fill for images, 0 (background) for masks. """
+    return {Image.Image: fill, tv_tensors.Image: fill, tv_tensors.Mask: 0}
 
 
 def resolve_doc_aug(aug_cfg: Optional[Union[Dict[str, Any], DocAugCfg]] = None) -> DocAugCfg:
@@ -26,36 +31,41 @@ def resolve_doc_aug(aug_cfg: Optional[Union[Dict[str, Any], DocAugCfg]] = None) 
 
 
 def _doc_aug_ops(aug: DocAugCfg, interpolation_mode, fill):
-    """ Torchvision based document augmentations applied to an image already at (roughly) target size. """
+    """ Torchvision (v2) document augmentations applied to an image already at (roughly) target size.
+
+    Geometric ops transform regions (boxes / keypoints / masks) passed w/ the image.
+    """
+    fill = _fill_by_type(fill)
     ops = [
         ('bitmap_prob', lambda: Bitmap()),
-        ('erosion_dilation_prob', lambda: transforms.RandomChoice([Erosion(3), Dilation(3)])),
-        ('shear_prob', lambda: transforms.RandomAffine(
+        ('erosion_dilation_prob', lambda: v2.RandomChoice([Erosion(3), Dilation(3)])),
+        ('shear_prob', lambda: v2.RandomAffine(
             degrees=0,
             shear=tuple(aug.shear_range_x) + tuple(aug.shear_range_y),
             interpolation=interpolation_mode,
             fill=fill,
         )),
-        ('shift_scale_rotate_prob', lambda: transforms.RandomAffine(
+        ('shift_scale_rotate_prob', lambda: v2.RandomAffine(
             degrees=aug.rotate_range,
             translate=(aug.shift_range_x, aug.shift_range_y),
             interpolation=interpolation_mode,
             fill=fill,
         )),
-        ('elastic_prob', lambda: transforms.ElasticTransform(
+        ('elastic_prob', lambda: v2.ElasticTransform(
             alpha=aug.elastic_alpha,
             sigma=aug.elastic_sigma,
-            interpolation=interpolation_mode,
+            # NOTE bilinear, torchvision's bicubic grid sample + fill leaves dark pixels along the image border
+            interpolation=InterpolationMode.BILINEAR,
             fill=fill,
         )),
-        ('brightness_contrast_prob', lambda: transforms.ColorJitter(
+        ('brightness_contrast_prob', lambda: v2.ColorJitter(
             brightness=aug.brightness_range,
             contrast=aug.contrast_range,
         )),
-        ('gaussian_blur_prob', lambda: transforms.GaussianBlur(aug.gaussian_blur_kernel, sigma=(0.1, 0.8))),
+        ('gaussian_blur_prob', lambda: v2.GaussianBlur(aug.gaussian_blur_kernel, sigma=(0.1, 0.8))),
     ]
     # ops w/ a zero probability are left out
-    return [transforms.RandomApply([op()], p=aug.prob(name)) for name, op in ops if aug.prob(name) > 0]
+    return [v2.RandomApply([op()], p=aug.prob(name)) for name, op in ops if aug.prob(name) > 0]
 
 
 def build_transforms_doc_basic(
@@ -83,12 +93,10 @@ def build_transforms_doc_basic(
     else:
         pp += [CenterCropOrPad(image_size, fill=input_cfg.fill_color)]
 
-    pp += [transforms.ToTensor()]
+    pp += to_tensor_ops(*((input_cfg.mean, input_cfg.std) if do_normalize else ()))
+    pp += [ToPureImage()]
 
-    if do_normalize:
-        pp += [transforms.Normalize(input_cfg.mean, input_cfg.std)]
-
-    return transforms.Compose(pp) if composed else pp
+    return v2.Compose(pp) if composed else pp
 
 
 def build_transforms_doc_better(
@@ -125,7 +133,7 @@ def build_transforms_doc_better(
         pp += _doc_aug_ops(aug, interpolation_mode, input_cfg.fill_color)
         pp += [
             RandomCropOrPad(image_size, fill=input_cfg.fill_color),
-            transforms.CenterCrop(image_size),
+            v2.CenterCrop(image_size),
         ]
     else:
         pp += [
@@ -133,53 +141,10 @@ def build_transforms_doc_better(
             CenterCropOrPad(image_size, fill=input_cfg.fill_color),
         ]
 
-    pp += [transforms.ToTensor()]
+    pp += to_tensor_ops(*((input_cfg.mean, input_cfg.std) if do_normalize else ()))
+    pp += [ToPureImage()]
 
-    if do_normalize:
-        pp += [transforms.Normalize(input_cfg.mean, input_cfg.std)]
-
-    return transforms.Compose(pp) if composed else pp
-
-
-class ResizeToSeqLen:
-    """ Resize (preserving aspect) to the largest size whose patch count fits within a sequence length budget.
-
-    Optionally (train) sample a reduced budget to vary the resolution.
-    """
-
-    def __init__(
-            self,
-            patch_size: int,
-            max_seq_len: int,
-            interpolation: str = 'bicubic',
-            random_seq_len_prob: float = 0.,
-            random_seq_len_range=(0.5, 1.0),
-            max_ratio: Optional[float] = None,
-    ):
-        self.patch_size = patch_size
-        self.max_seq_len = max_seq_len
-        self.interpolation = str_to_interp_mode(interpolation)
-        self.random_seq_len_prob = random_seq_len_prob
-        self.random_seq_len_range = random_seq_len_range
-        self.max_ratio = max_ratio
-
-    def __call__(self, img):
-        w, h = F.get_image_size(img)
-        seq_len = self.max_seq_len
-        if self.random_seq_len_prob > 0 and random.random() < self.random_seq_len_prob:
-            seq_len = max(1, int(seq_len * random.uniform(*self.random_seq_len_range)))
-        _, (th, tw) = get_image_size_for_seq(
-            (h, w),
-            patch_size=self.patch_size,
-            max_seq_len=seq_len,
-            divisible_by_patch=True,
-            max_ratio=self.max_ratio,
-        )
-        return F.resize(img, [th, tw], interpolation=self.interpolation, antialias=True)
-
-    def __repr__(self):
-        return (f'{self.__class__.__name__}(patch_size={self.patch_size}, max_seq_len={self.max_seq_len}, '
-                f'random_seq_len_prob={self.random_seq_len_prob})')
+    return v2.Compose(pp) if composed else pp
 
 
 def build_transforms_doc_naflex(
@@ -224,14 +189,10 @@ def build_transforms_doc_naflex(
             )
         ]
 
-    pp += [transforms.ToTensor()]
-
-    if do_normalize:
-        pp += [transforms.Normalize(input_cfg.mean, input_cfg.std)]
-
+    pp += to_tensor_ops(*((input_cfg.mean, input_cfg.std) if do_normalize else ()))
     pp += [Patchify(input_cfg.patch_size)]
 
-    return transforms.Compose(pp) if composed else pp
+    return v2.Compose(pp) if composed else pp
 
 
 def build_transforms_doc_nougat(
@@ -382,8 +343,8 @@ def build_transforms_doc_nougat(
         # FIXME leave alb uncomposed too if composed=False?
         tv_pp += [AlbWrapper(alb.Compose(alb_pp))]
 
-    tv_pp += [transforms.ToTensor()]
-    if do_normalize:
-        tv_pp += [transforms.Normalize(input_cfg.mean, input_cfg.std)]
+    # NOTE the albumentations stage is image only, regions aren't supported w/ nougat transforms
+    tv_pp += to_tensor_ops(*((input_cfg.mean, input_cfg.std) if do_normalize else ()))
+    tv_pp += [ToPureImage()]
 
-    return transforms.Compose(tv_pp) if composed else tv_pp
+    return v2.Compose(tv_pp) if composed else tv_pp

@@ -39,6 +39,9 @@ changes. `pip install --pre chugr` installs the current dev version.
 * `simple_parsing` dependency replaced by a minimal `Serializable` mixin and nested dataclass CLI parser (`chugr.common.parse_args`)
 * NaFlex (native aspect, variable resolution) document transforms (`doc_naflex`) producing patch sequences + coords, padded by `chugr.common.collate`
 * Fixes for `doc_basic` / `doc_better` train transforms, albumentations 2.x support for `doc_nougat`
+* Transforms on `torchvision` v2: chugr's own transforms are `v2.Transform`s (random params drawn once per call), so
+  regions passed w/ the image (`tv_tensors.KeyPoints` polys, `BoundingBoxes`, `Mask`) follow every geometric op, plus
+  `NormalizeOrientation` (90 degree multiples from the line polys) for rotated pages
 * HF datasets loader: shuffled & sharded `IntervalSampler` for training (w/ intervals shorter than an epoch), split slicing (`train[:1000]`)
 * `python -m chugr.app.test` to benchmark loaders and dump (reassembled) samples
 * NaFlex batching (`chugr.naflex`, adapted from OpenCLIP's streaming NaFlex loader): a rank-identical schedule of
@@ -133,7 +136,7 @@ The processing pipelines remain webdataset based when using `datasets`, they are
 
 #### `image`
 
-Image processing, `torchvision` and `albumentations` based transform building code. A mix of generic image (imagenet, simclr) transforms and document specific transforms, including an implementation of `albumentations` based `nougat` transforms.
+Image processing, `torchvision` (v2) and `albumentations` based transform building code. A mix of generic image (imagenet, simclr) transforms and document specific transforms, including an implementation of `albumentations` based `nougat` transforms.
 
 #### `text`
 
@@ -292,6 +295,20 @@ img_cfg = chugr.ImageInputCfg(transform_type='doc_naflex', patch_size=16, max_se
 img_fn = chugr.create_image_preprocessor(input_cfg=img_cfg, is_training=True)
 out = img_fn(Image.new('L', (850, 1100), 255))
 # {'patches': [N, 256], 'patch_coord': [N, 2] (y, x), 'patch_valid': [N] bool}, N <= max_seq_len
+```
+
+Regions (e.g. OCR line / token polys) can be passed w/ the image, geometric ops transform them w/ the same random
+params. Polys are `tv_tensors.KeyPoints` `[M, 4, 2]` in pixels (corners in reading order, as in the IDL / PDFA `poly`
+annotations), boxes `tv_tensors.BoundingBoxes`. Regions are never dropped or reordered, so they stay aligned w/ their
+text. For `doc_naflex` the output regions are in pixels of the resized page, patch `(y, x)` covers
+`[y * P, (y + 1) * P) x [x * P, (x + 1) * P)`. The `doc_nougat` albumentations stage is image only.
+
+```python
+import torch
+from torchvision import tv_tensors
+
+polys = tv_tensors.KeyPoints(torch.tensor([[[200., 300.], [600., 300.], [600., 340.], [200., 340.]]]), canvas_size=(1100, 850))
+out, polys_out = img_fn(Image.new('L', (850, 1100), 255), polys)
 ```
 
 For batches w/ a sequence length (patch budget) drawn per batch and the batch size set by a token budget, set

@@ -1,16 +1,12 @@
 from dataclasses import asdict
 from typing import Any, Dict, Optional, Union
 
-from torchvision import transforms
-from timm.data import (
-    ResizeKeepRatio,
-    CenterCropOrPad,
-    RandomResizedCropAndInterpolation,
-    create_transform,
-)
+from torchvision.transforms import InterpolationMode, v2
+from timm.data import create_transform
 
 from chugr.common import ImageInputCfg, ImageAugCfg
-from .transforms_torch import ConvertColor
+from .transforms_torch import ConvertColor, ResizeKeepRatio, CenterCropOrPad, RandomResizedCrop, ToPureImage, \
+    to_tensor_ops
 
 
 def build_transforms_image_timm(
@@ -91,20 +87,15 @@ def build_transforms_image_basic(
         aug_cfg: Optional[Union[Dict[str, Any], ImageAugCfg]] = None,
         composed: bool = True,
 ):
-    """ Build image transfoms leveraging torchvision transforms.
+    """ Build image transfoms leveraging torchvision (v2) transforms.
     """
-    if do_normalize:
-        normalize = transforms.Normalize(mean=input_cfg.mean, std=input_cfg.std)
-    else:
-        normalize = None
-
     interpolation = input_cfg.interpolation or 'bicubic'
     assert interpolation in ['bicubic', 'bilinear', 'random']
     # NOTE random is ignored for interpolation_mode, so defaults to BICUBIC for inference if set
     if interpolation == 'bilinear':
-        interpolation_mode = transforms.InterpolationMode.BILINEAR
+        interpolation_mode = InterpolationMode.BILINEAR
     else:
-        interpolation_mode = transforms.InterpolationMode.BICUBIC
+        interpolation_mode = InterpolationMode.BICUBIC
 
     resize_mode = input_cfg.resize_mode or 'shortest'
     assert resize_mode in ('shortest', 'longest', 'squash')
@@ -122,8 +113,8 @@ def build_transforms_image_basic(
             # FIXME note we don't have good option for 'longest' resizing w/ RRC
 
         transform_list = [
-            # like torchvision.transforms.RandomResizedCrop but supports randomized interpolation for robustness
-            RandomResizedCropAndInterpolation(
+            # like torchvision RandomResizedCrop but supports randomized interpolation for robustness
+            RandomResizedCrop(
                 image_size,
                 scale=aug_cfg.scale or (1.0, 1.0),
                 ratio=aug_cfg.ratio or (1.0, 1.0),
@@ -136,28 +127,25 @@ def build_transforms_image_basic(
 
         if aug_cfg.color_jitter_prob:
             assert aug_cfg.color_jitter is not None and len(aug_cfg.color_jitter) == 4
-            if aug_cfg.color_jitter_prob is not None:
-                transform_list.append(
-                    transforms.RandomApply(
-                        transforms.ColorJitter(
-                            *aug_cfg.color_jitter,
-                        ),
-                        p=aug_cfg.color_jitter_prob,
-                    )
+            transform_list.append(
+                v2.RandomApply(
+                    [v2.ColorJitter(*aug_cfg.color_jitter)],
+                    p=aug_cfg.color_jitter_prob,
                 )
+            )
         elif aug_cfg.color_jitter is not None:
-            transform_list.append(transforms.ColorJitter(*aug_cfg.color_jitter))
+            transform_list.append(v2.ColorJitter(*aug_cfg.color_jitter))
 
         if aug_cfg.grayscale_prob:
-            transform_list.append(transforms.RamndomGrayscale(aug_cfg.grayscale_prob))
+            transform_list.append(v2.RandomGrayscale(aug_cfg.grayscale_prob))
 
         if aug_cfg.gaussian_blur_prob:
             gaussian_blur_kernel = aug_cfg.gaussian_blur_kernel_size or 23
-            transforms.RandomApply([
-                transforms.GaussianBlur(
-                    kernel_size=gaussian_blur_kernel,
-                )],
-                p=aug_cfg.gaussian_blur_prob,
+            transform_list.append(
+                v2.RandomApply(
+                    [v2.GaussianBlur(kernel_size=gaussian_blur_kernel)],
+                    p=aug_cfg.gaussian_blur_prob,
+                )
             )
 
     else:
@@ -173,7 +161,7 @@ def build_transforms_image_basic(
                 image_size = (image_size, image_size)
 
             transform_list = [
-                transforms.Resize(image_size, interpolation=interpolation_mode, antialias=True),
+                v2.Resize(image_size, interpolation=interpolation_mode, antialias=True),
             ]
         else:
             assert resize_mode == 'shortest'
@@ -183,21 +171,19 @@ def build_transforms_image_basic(
             if image_size[0] == image_size[1]:
                 # simple case, use torchvision built-in Resize w/ shortest edge mode (scalar size arg)
                 transform_list = [
-                    transforms.Resize(image_size[0], interpolation=interpolation_mode, antialias=True)
+                    v2.Resize(image_size[0], interpolation=interpolation_mode, antialias=True)
                 ]
             else:
                 # resize shortest edge to matching target dim for non-square target
                 transform_list = [ResizeKeepRatio(image_size)]
 
-            transform_list += [transforms.CenterCrop(image_size)]
+            transform_list += [v2.CenterCrop(image_size)]
 
         if do_convert:
             transform_list.append(ConvertColor(mode=input_cfg.mode))
     # end if is_training
 
-    transform_list += [transforms.ToTensor()]
+    transform_list += to_tensor_ops(*((input_cfg.mean, input_cfg.std) if do_normalize else ()))
+    transform_list += [ToPureImage()]
 
-    if normalize is not None:
-        transform_list += [normalize]
-
-    return transforms.Compose(transform_list) if composed else transform_list
+    return v2.Compose(transform_list) if composed else transform_list
