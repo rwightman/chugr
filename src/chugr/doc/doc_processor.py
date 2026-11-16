@@ -103,9 +103,6 @@ class DocProcessor:
         self.seed = seed
         self._generator = random.Random(seed)
         self._generator_worker = None
-        # FIXME note, should move to torchvision v2 annotations at some point
-        #  * they should all eventually have a generator arg for better handling random state
-        #  * they have forms that accept bbox/points args to transform annotations in sync with image
 
     @property
     def generator(self) -> random.Random:
@@ -120,18 +117,22 @@ class DocProcessor:
         return self._generator
 
     def _preprocess_image_pages(self, decoded_pages, page_image_info=None):
+        """ Preprocess decoded page images, returns (pages, per page extra outputs or None).
+
+        With per page image info (e.g. annotation regions for region aware transforms / labels), each page goes
+        through `_preprocess_page` which may return extra outputs (dict) to merge into the sample.
+        """
         if self.image_process_fn is None:
-            return decoded_pages
+            return decoded_pages, None
+        if page_image_info is None:
+            return [self.image_process_fn(dp) for dp in decoded_pages], None
+        assert len(page_image_info) == len(decoded_pages)
+        outputs = [self._preprocess_page(dp, pi) for dp, pi in zip(decoded_pages, page_image_info)]
+        return [o[0] for o in outputs], [o[1] for o in outputs]
 
-        if page_image_info is not None:
-            # FIXME, WIP. If train objective involves masking or otherwise processing image
-            #  with knowledge of annotations / text content, anno info should contain
-            #  mask locations, etc. For such a task, we need to pass it to image preprocess
-            decoded_pages = [self.image_process_fn(dp, page_info=pi) for dp, pi in zip(decoded_pages, page_image_info)]
-        else:
-            decoded_pages = [self.image_process_fn(dp) for dp in decoded_pages]
-
-        return decoded_pages
+    def _preprocess_page(self, page, page_info):
+        """ Preprocess one page image w/ its page info, returns (page, extra outputs dict). """
+        return self.image_process_fn(page), {}
 
     def _decode_image_pages(
             self,
@@ -151,8 +152,6 @@ class DocProcessor:
             _logger.warning(
                 f'Mismatch between num image and num annotation pages {num_image_pages} != {num_anno_pages}'
                 f' for sample {sample["__url__"]}, {sample["__key__"]}.')
-
-        decoded_pages = self._preprocess_image_pages(decoded_pages)
 
         return decoded_pages, num_image_pages
 
@@ -174,8 +173,6 @@ class DocProcessor:
             _logger.warning(
                 f'Mismatch between num image and num annotation pages {num_image_pages} != {num_anno_pages}'
                 f' for sample {sample["__url__"]}, {sample["__key__"]}.')
-
-        decoded_pages = self._preprocess_image_pages(decoded_pages)
 
         return decoded_pages, num_image_pages
 
@@ -207,6 +204,8 @@ class DocProcessor:
 
         # decode page annotations / text
         page_anno, page_indices, num_anno_pages = self._decode_anno(sample)
+        # per page info for the image preprocessing (e.g. regions), not part of the output
+        page_image_info = page_anno.get('_parse', {}).pop('image_info', None)
 
         # decode page images
         page_images = []
@@ -231,6 +230,10 @@ class DocProcessor:
                 break
 
         assert len(page_images), 'No page images present'
+        page_images, page_extras = self._preprocess_image_pages(page_images, page_image_info)
+        if page_extras is not None and page_extras[0]:
+            # extra per page outputs (e.g. patch labels) are added to the annotation as per page lists
+            page_anno.update({k: [e[k] for e in page_extras] for k in page_extras[0]})
 
         if self.expand_pages and len(page_images) > 1:
             # expand pages and page annotations into multiple samples (return list of sample dicts)

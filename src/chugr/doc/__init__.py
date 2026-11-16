@@ -14,4 +14,5 @@ from .constants import (
 from .doc_processor import DocProcessor
 from .doc_read_processor import DocReadProcessor
 from .doc_vqa_processor import DocVqaProcessor
+from .regions import PatchLabelCfg
 from .synth_text import SynthTextCfg, SynthTextRenderer

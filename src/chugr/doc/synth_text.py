@@ -128,7 +128,9 @@ class SynthTextRenderer:
         assert self.fonts, f'No usable fonts found (pattern {cfg.font_pattern}).'
         _logger.info(f'SynthTextRenderer using {len(self.fonts)} fonts.')
 
-    def __call__(self, lines: Sequence[str], rng: Optional[random.Random] = None) -> Tuple[Image.Image, List[str]]:
+    def __call__(self, lines: Sequence[str], rng: Optional[random.Random] = None, return_boxes: bool = False):
+        """ Render a span of `lines`, returns (image, rendered lines) or w/ return_boxes (image, rendered lines, line
+        ink boxes [L, 4] (x0, y0, x1, y1) in image pixels). """
         cfg = self.cfg
         rng = rng or random
         lines = clean_text_lines(lines)
@@ -185,6 +187,7 @@ class SynthTextRenderer:
         img = Image.new('L', (canvas_w, canvas_h), color=bg)
         draw = ImageDraw.Draw(img)
         y = offset_y
+        boxes = []
         for text, center, gap in zip(rendered, line_center, line_gap):
             if gap:
                 y += line_h
@@ -192,6 +195,8 @@ class SynthTextRenderer:
             if center:
                 x += max(0, (block_w - int(font.getlength(text))) // 2)
             draw.text((x, y), text, font=font, fill=ink)
+            if return_boxes:
+                boxes.append(draw.textbbox((x, y), text, font=font))
             y += line_h
 
         if rng.random() < cfg.blur_prob:
@@ -202,6 +207,8 @@ class SynthTextRenderer:
             buf = io.BytesIO()
             img.save(buf, format='JPEG', quality=rng.randint(30, 90))
             img = Image.open(io.BytesIO(buf.getvalue())).convert('L')
+        if return_boxes:
+            return img, rendered, boxes
         return img, rendered
 
 
